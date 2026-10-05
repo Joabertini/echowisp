@@ -54,4 +54,3 @@ Funciona con el Brave del usuario cerrado. Prioridad: recursos mínimos y fluide
 - Arranque con Windows (opcional, preguntar).
 - Reacomodar con DPI por monitor (`WM_DPICHANGED`).
 - Una isla pegada arriba fue descartada: se prefirió flotante arrastrable.
-

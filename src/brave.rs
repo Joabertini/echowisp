@@ -33,6 +33,14 @@ fn profile_dir() -> PathBuf {
 }
 
 pub fn find_brave() -> Option<PathBuf> {
+    // Navegador elegido en el instalador (Brave, Brave Origin portatil u otro Chromium).
+    let dir = std::env::current_exe().ok()?.parent()?.to_path_buf();
+    if let Some(p) = std::fs::read_to_string(dir.join("navegador.txt")).ok().map(|s| PathBuf::from(s.trim())).filter(|p| p.exists()) {
+        return Some(p);
+    }
+    if let Some(p) = Some(dir.join("brave").join("brave.exe")).filter(|p| p.exists()) {
+        return Some(p);
+    }
     let sub = wide(r"SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths\brave.exe");
     for root in [HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE] {
         let mut buf = [0u16; 1024];

@@ -3,6 +3,15 @@
 Reproductor flotante de YouTube Music para Windows 10. Un exe Win32 en Rust (~270 KB, ~2 MB de RAM)
 controla un Brave invisible (headless, perfil propio) por CDP. Brave Shields activo.
 
+Descarga: [bertinilabs.xyz/ytm-float](https://www.bertinilabs.xyz/ytm-float/). Licencia MIT.
+
+## Instalador
+
+Módulos a elección: card de YouTube Music (siempre), Discord en la card, puente a Discord (reemplaza
+Kenku FM). Navegador: cualquier Chromium detectado (Brave, Chrome, Edge, Vivaldi, Chromium) o Brave Origin
+portátil, que se baja a la carpeta de la app. Solo Brave bloquea anuncios de forma nativa (Shields).
+Por usuario, sin permisos de administrador.
+
 ## Uso
 
 - Acceso directo: escritorio y menú Inicio → **YTM Float**. Instalado en `%LOCALAPPDATA%\Programs\ytm-float\`.

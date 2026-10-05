@@ -346,6 +346,7 @@ struct App {
     br_guild: Option<String>,
     br_channel: Option<String>,
     // Discord web en pestaña oculta (opcional)
+    dsc_avail: bool, // modulo elegido en el instalador (discord.module junto al exe)
     dsc_on: bool,
     dsc_open: bool,
     dsc: Value, // ultimo estado de discord.js; Null = cargando
@@ -466,6 +467,9 @@ impl App {
     }
     /// Donde empiezan los resultados: debajo de las pestañas o de la seccion del puente.
     fn base(&self) -> i32 {
+        if !self.dsc_avail {
+            return self.dsc_top();
+        }
         self.dsc_top() + 32 + 8 + if self.dsc_open { self.dsc_body_h() } else { 0 }
     }
     fn br_h(&self) -> i32 {
@@ -564,8 +568,10 @@ impl App {
                 hs.extend(self.br_rows());
             }
         }
-        hs.push(Hit::DscRow);
-        if self.dsc_open {
+        if self.dsc_avail {
+            hs.push(Hit::DscRow);
+        }
+        if self.dsc_avail && self.dsc_open {
             hs.extend(self.dsc_rows());
             if self.dsc_logged() {
                 hs.extend([Hit::DscDeaf, Hit::DscLeave]);
@@ -1208,7 +1214,7 @@ impl App {
         }
 
         // Seccion Discord: fila de estado (colapsable) y, abierta, controles de voz + integrantes.
-        {
+        if self.dsc_avail {
             let z = self.zone(Hit::DscRow);
             cv.round(z.left as f32, z.top as f32, z.right as f32, z.bottom as f32, self.pf(12.0),
                 if self.hover == Hit::DscRow { HOVER } else { CARD });
@@ -1389,7 +1395,7 @@ impl App {
             }
         }
 
-        {
+        if self.dsc_avail {
             let z = self.zone(Hit::DscRow);
             let label = if !self.dsc_on {
                 "Discord · desactivado".to_string()
@@ -1850,12 +1856,14 @@ fn main() {
             br_device: "CABLE Output".into(),
             br_guild: None,
             br_channel: None,
+            dsc_avail: false,
             dsc_on: false,
             dsc_open: false,
             dsc: Value::Null,
         });
         APP = Box::into_raw(a);
         app().br = bridge::Bridge::start(hwnd as isize); // modulo opcional
+        app().dsc_avail = std::env::current_exe().map(|e| e.with_file_name("discord.module").exists()).unwrap_or(false);
         app().dsc_on = app().eng.discord_on();
         app().render(); // una ventana en capas no se ve hasta el primer UpdateLayeredWindow
         ShowWindow(hwnd, SW_SHOWNOACTIVATE);

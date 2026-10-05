@@ -234,7 +234,7 @@ impl Engine {
 
     fn run(self: Arc<Self>) {
         let Some(exe) = brave::find_brave() else {
-            self.post(Ev::Status("No encontré Brave instalado".into()));
+            self.post(Ev::Status("No encontré el navegador (reinstalá y elegí uno)".into()));
             return;
         };
         while !self.exiting.load(SeqCst) {
