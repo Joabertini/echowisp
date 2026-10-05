@@ -97,7 +97,6 @@
   setInterval(() => { hook(); emit(); }, 2000);
 
   const cmds = {
-    state,
     mute() { audio()?.toggleSelfMute(); emit(); },
     deaf() { audio()?.toggleSelfDeaf(); emit(); },
     leave() { chanActions()?.disconnect(); emit(); },
@@ -108,7 +107,7 @@
       const guilds = Object.values(S.guild()?.getGuilds?.() ?? {});
       for (const g of guilds) {
         const voc = S.gchan()?.getChannels?.(g.id)?.VOCAL ?? [];
-        for (const v of voc) out.push({ id: v.channel.id, name: v.channel.name, guild: g.name });
+        for (const v of voc) out.push({ pick: v.channel.id, title: v.channel.name, sub: g.name });
       }
       return out;
     },

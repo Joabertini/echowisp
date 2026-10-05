@@ -143,6 +143,13 @@ struct BrGuild {
     channels: Vec<(String, String)>,
 }
 
+impl Item {
+    fn from_json(x: &Value) -> Item {
+        let s = |k: &str| x[k].as_str().map(String::from);
+        Item { id: s("id"), list: s("list"), title: s("title").unwrap_or_default(), sub: s("sub").unwrap_or_default(), pick: s("pick") }
+    }
+}
+
 /// "CABLE Output (VB-Audio Virtual Cable)" → "CABLE Output".
 fn short_dev(d: &str) -> &str {
     d.split(" (").next().unwrap_or(d)
@@ -203,6 +210,11 @@ impl Canvas {
         }
     }
 
+    /// Circulo relleno de radio `r` centrado en (x, y).
+    fn dot(&mut self, x: f32, y: f32, r: f32, c: u32) {
+        self.round(x - r, y - r, x + r, y + r, r, c);
+    }
+
     /// Recorta la ventana con esquinas redondeadas y premultiplica el alfa.
     fn finish(&mut self, rad: f32) {
         let (w, h) = (self.w, self.h);
@@ -234,15 +246,6 @@ impl Canvas {
         SetTextColor(self.dc, c);
         DrawTextW(self.dc, w.as_ptr(), w.len() as i32, &mut r, fmt | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
         SelectObject(self.dc, old);
-    }
-
-    unsafe fn text_width(&self, f: HFONT, s: &str) -> i32 {
-        let w: Vec<u16> = s.encode_utf16().collect();
-        let old = SelectObject(self.dc, f);
-        let mut sz: SIZE = zeroed();
-        GetTextExtentPoint32W(self.dc, w.as_ptr(), w.len() as i32, &mut sz);
-        SelectObject(self.dc, old);
-        sz.cx
     }
 
     /// Texto centrado que puede partirse en dos lineas.
@@ -972,57 +975,21 @@ impl App {
                 let current = (tag & 0xffffff) == (self.seq & 0xffffff);
                 if !ok {
                     if kind == K_OTHER || current {
-                        if kind == K_LISTS {
+                        if kind != K_OTHER {
                             self.shown = Hit::None;
                         }
                         self.flash(r["error"].as_str().unwrap_or("error"));
                     }
                     return;
                 }
-                if kind == K_DSC && current && self.shown == Hit::DscJoin {
-                    let items: Vec<Item> = r["data"]
-                        .as_array()
-                        .map(|a| {
-                            a.iter()
-                                .map(|x| Item {
-                                    id: None,
-                                    list: None,
-                                    title: x["name"].as_str().unwrap_or_default().to_string(),
-                                    sub: x["guild"].as_str().unwrap_or_default().to_string(),
-                                    pick: x["id"].as_str().map(String::from),
-                                })
-                                .collect()
-                        })
-                        .unwrap_or_default();
-                    self.msg.clear();
-                    if items.is_empty() {
-                        self.flash("Sin canales de voz");
-                        self.shown = Hit::None;
-                    }
-                    self.set_items(items);
-                    self.invalidate();
-                    return;
-                }
-                if (kind == K_SEARCH || kind == K_LISTS) && current {
-                    let items: Vec<Item> = r["data"]
-                        .as_array()
-                        .map(|a| {
-                            a.iter()
-                                .map(|x| Item {
-                                    id: x["id"].as_str().map(String::from),
-                                    list: x["list"].as_str().map(String::from),
-                                    title: x["title"].as_str().unwrap_or_default().to_string(),
-                                    sub: x["sub"].as_str().unwrap_or_default().to_string(),
-                                    pick: None,
-                                })
-                                .collect()
-                        })
-                        .unwrap_or_default();
+                if kind != K_OTHER && current {
+                    let items: Vec<Item> = r["data"].as_array().map(|a| a.iter().map(Item::from_json).collect()).unwrap_or_default();
                     self.msg.clear();
                     if items.is_empty() {
                         self.flash(match (kind, self.shown) {
                             (K_LISTS, Hit::Lists) => "Sin listas (¿sesión iniciada?)",
                             (K_LISTS, _) => "No encontré esa sección",
+                            (K_DSC, _) => "Sin canales de voz",
                             _ => "Sin resultados",
                         });
                         self.shown = Hit::None;
@@ -1128,7 +1095,7 @@ impl App {
         if self.mini {
             // Colapsada conserva el punto de estado (verde sonando, gris en pausa).
             let (dx, dy) = (self.pf(16.0), self.pf((H_MINI / 2) as f32));
-            cv.round(dx - self.pf(4.0), dy - self.pf(4.0), dx + self.pf(4.0), dy + self.pf(4.0), self.pf(4.0), dot);
+            cv.dot(dx, dy, self.pf(4.0), dot);
             GdiFlush();
             cv.text(self.f.title, line1, RECT { left: self.px(28), top: self.px(6), right: w - self.px(28), bottom: self.px(27) }, INK, DT_CENTER);
             cv.text(self.f.small, line2, RECT { left: self.px(28), top: self.px(26), right: w - self.px(28), bottom: self.px(43) }, c2, DT_CENTER);
@@ -1141,7 +1108,7 @@ impl App {
         let login = self.ready && !self.logged;
         if !login {
             let (dx, dy) = (self.pf(22.0), self.pf(18.0));
-            cv.round(dx - self.pf(4.0), dy - self.pf(4.0), dx + self.pf(4.0), dy + self.pf(4.0), self.pf(4.0), dot);
+            cv.dot(dx, dy, self.pf(4.0), dot);
         }
 
         // Botones redondos del encabezado (hover).
@@ -1214,7 +1181,7 @@ impl App {
                 _ => DIM3,
             };
             let (dx, dy) = (z.left as f32 + self.pf(14.0), (z.top + z.bottom) as f32 / 2.0 - self.pf(1.0));
-            cv.round(dx - self.pf(4.0), dy - self.pf(4.0), dx + self.pf(4.0), dy + self.pf(4.0), self.pf(4.0), dot);
+            cv.dot(dx, dy, self.pf(4.0), dot);
             if self.br_state == "transmitiendo" {
                 let (l, r, y) = (z.left as f32 + self.pf(26.0), z.right as f32 - self.pf(28.0), z.bottom as f32 - self.pf(5.0));
                 cv.round(l, y - self.pf(1.0), r, y + self.pf(1.0), self.pf(1.0), HOVER);
@@ -1257,7 +1224,7 @@ impl App {
                 DIM
             };
             let (dx, dy) = (z.left as f32 + self.pf(14.0), (z.top + z.bottom) as f32 / 2.0);
-            cv.round(dx - self.pf(4.0), dy - self.pf(4.0), dx + self.pf(4.0), dy + self.pf(4.0), self.pf(4.0), dot);
+            cv.dot(dx, dy, self.pf(4.0), dot);
             if self.dsc_open {
                 let mut hs = self.dsc_rows();
                 if self.dsc_logged() {
@@ -1282,7 +1249,7 @@ impl App {
                         let cy = self.pf((y0 + k as i32 * DSC_MEMBER + DSC_MEMBER / 2) as f32);
                         let cx = self.pf(26.0);
                         let c = if m["speaking"] == true { GREEN } else { HOVER };
-                        cv.round(cx - self.pf(3.5), cy - self.pf(3.5), cx + self.pf(3.5), cy + self.pf(3.5), self.pf(3.5), c);
+                        cv.dot(cx, cy, self.pf(3.5), c);
                     }
                 }
             }
@@ -1359,7 +1326,7 @@ impl App {
             cv.text(self.f.text, "Buscar canción…", field, DIM3, DT_LEFT);
         } else {
             // Si no entra, se ve el final (donde se escribe).
-            let tw = cv.text_width(self.f.text, &self.query);
+            let tw = measure(self.f.text, &self.query);
             let fw = field.right - field.left;
             let mut f2 = field;
             if tw > fw {
@@ -1376,7 +1343,7 @@ impl App {
             SelectObject(cv.dc, old);
         }
         if self.active && self.caret_on {
-            let tw = if self.query.is_empty() { 0 } else { cv.text_width(self.f.text, &self.query) };
+            let tw = if self.query.is_empty() { 0 } else { measure(self.f.text, &self.query) };
             let x = field.left + tw.min(field.right - field.left);
             GdiFlush();
             cv.round(x as f32, self.pf((Y_SRCH + 10) as f32), x as f32 + self.pf(1.5).max(1.0), self.pf((Y_SRCH + 26) as f32), 0.5, INDIGO);
@@ -1416,8 +1383,7 @@ impl App {
                     if label.is_empty() {
                         cv.text(self.f.small, &value, z, INK, DT_CENTER);
                     } else {
-                        cv.text(self.f.small, label, RECT { left: z.left + self.px(12), right: z.left + self.px(70), ..z }, DIM, DT_LEFT);
-                        cv.text(self.f.small, &value, RECT { left: z.left + self.px(72), right: z.right - self.px(10), ..z }, INK, DT_LEFT);
+                        self.kv(&cv, z, label, &value);
                     }
                 }
             }
@@ -1458,8 +1424,7 @@ impl App {
                         Hit::DscOff => cv.text(self.f.small, "Quitar Discord de la card", z, DIM, DT_CENTER),
                         Hit::DscJoin => {
                             let v = self.dsc["channel"]["name"].as_str().unwrap_or("unirse…");
-                            cv.text(self.f.small, "Canal", RECT { left: z.left + self.px(12), right: z.left + self.px(70), ..z }, DIM, DT_LEFT);
-                            cv.text(self.f.small, v, RECT { left: z.left + self.px(72), right: z.right - self.px(10), ..z }, INK, DT_LEFT);
+                            self.kv(&cv, z, "Canal", v);
                         }
                         _ => {}
                     }
@@ -1501,6 +1466,12 @@ impl App {
         GdiFlush();
         cv.finish(RADIUS * s);
         self.present(cv, w, h);
+    }
+
+    /// Fila "Etiqueta   valor" de los selectores (puente y Discord).
+    unsafe fn kv(&self, cv: &Canvas, z: RECT, label: &str, value: &str) {
+        cv.text(self.f.small, label, RECT { left: z.left + self.px(12), right: z.left + self.px(70), ..z }, DIM, DT_LEFT);
+        cv.text(self.f.small, value, RECT { left: z.left + self.px(72), right: z.right - self.px(10), ..z }, INK, DT_LEFT);
     }
 
     /// Vuelca el lienzo a la ventana. Si cambia el ancho se mantiene el centro (colapsar

@@ -1,5 +1,5 @@
 // Captura WASAPI de un dispositivo de entrada (p. ej. "CABLE Output" de VB-Cable) y entrega
-// muestras f32 intercaladas. Tambien una fuente para songbird que lee de esa captura en vivo.
+// muestras f32 intercaladas, y la fuente para songbird que lee de esa captura en vivo.
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use std::{
     io::{self, Read, Seek, SeekFrom},
@@ -20,13 +20,6 @@ pub fn input_devices() -> Vec<String> {
     }
     v.sort_by_key(|n| !n.starts_with("CABLE"));
     v
-}
-
-pub fn output_devices() -> Vec<String> {
-    cpal::default_host()
-        .output_devices()
-        .map(|it| it.filter_map(|d| d.name().ok()).collect())
-        .unwrap_or_default()
 }
 
 pub struct Capture {
@@ -70,30 +63,6 @@ pub fn open(name: &str, mut on_data: impl FnMut(&[f32]) + Send + 'static) -> Res
     Ok(Capture { _stream: stream, rate, channels })
 }
 
-/// Tono de prueba en un dispositivo de salida (para verificar el cable sin que suene en los parlantes).
-pub fn tone(name: &str, hz: f32) -> Result<cpal::Stream, String> {
-    let host = cpal::default_host();
-    let dev = find(host.output_devices().map_err(|e| e.to_string())?, name)
-        .ok_or_else(|| format!("no encontré el dispositivo de salida \"{name}\""))?;
-    let cfg = dev.default_output_config().map_err(|e| e.to_string())?;
-    if cfg.sample_format() != cpal::SampleFormat::F32 {
-        return Err(format!("salida en {:?}, el tono solo sabe f32", cfg.sample_format()));
-    }
-    let (rate, ch) = (cfg.sample_rate().0 as f32, cfg.channels() as usize);
-    let mut t = 0f32;
-    let s = dev
-        .build_output_stream(&cfg.into(), move |d: &mut [f32], _| {
-            for frame in d.chunks_mut(ch) {
-                let v = (t * hz * std::f32::consts::TAU).sin() * 0.5;
-                frame.fill(v);
-                t += 1.0 / rate;
-            }
-        }, |e| eprintln!("tono: {e}"), None)
-        .map_err(|e| e.to_string())?;
-    s.play().map_err(|e| e.to_string())?;
-    Ok(s)
-}
-
 /// Fuente en vivo para songbird: bytes f32 LE intercalados, sin fin. Lectura bloqueante: el
 /// mezclador de songbird pide de a 20 ms y la captura los entrega a su ritmo.
 pub struct Live {
@@ -103,17 +72,12 @@ pub struct Live {
 }
 
 /// Bloques en cola como maximo (~10 ms c/u): si Discord se atrasa se descarta lo nuevo
-/// en vez de acumular latencia.
+/// en vez de acumular latencia (el que captura usa try_send).
 const MAX_BLOCKS: usize = 20;
 
 pub fn live() -> (SyncSender<Vec<f32>>, Live) {
     let (tx, rx) = sync_channel(MAX_BLOCKS);
     (tx, Live { rx: Mutex::new(rx), pending: Vec::new(), pos: 0 })
-}
-
-/// Envia sin bloquear el hilo de audio; si la cola esta llena, el bloque se pierde.
-pub fn push(tx: &SyncSender<Vec<f32>>, d: &[f32]) {
-    let _ = tx.try_send(d.to_vec());
 }
 
 impl Read for Live {

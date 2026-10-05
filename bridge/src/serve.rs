@@ -39,7 +39,7 @@ fn save(v: &Value) {
 }
 
 fn id(v: &Value) -> Option<NonZeroU64> {
-    v.as_str().and_then(|s| s.parse().ok()).or_else(|| v.as_u64().and_then(NonZeroU64::new))
+    v.as_str()?.parse().ok()
 }
 
 type Guilds = Arc<Mutex<BTreeMap<u64, (String, Vec<(u64, String)>)>>>;
@@ -74,7 +74,7 @@ fn start_capture(device: &str, level: Arc<AtomicU32>) -> Result<(smpsc::Sender<(
             // pico decreciente: el medidor de la card cae suave
             let old = f32::from_bits(level.load(Relaxed));
             level.store(peak.max(old * 0.9).to_bits(), Relaxed);
-            capture::push(&tx, d);
+            let _ = tx.try_send(d.to_vec()); // cola llena: el bloque se pierde
         });
         match r {
             Ok(cap) => {

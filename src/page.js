@@ -154,7 +154,6 @@
       if (p?.isMuted) p.isMuted() ? p.unMute() : p.mute(); else { const v = video(); if (v) v.muted = !v.muted; }
       emit();
     },
-    state,
   };
 
   window.__ytm = async (cmd, arg) => {
