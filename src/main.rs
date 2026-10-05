@@ -112,7 +112,6 @@ enum Hit {
     BrRow,
     BrToken,
     BrDevice,
-    BrGuild,
     BrChannel,
     BrGo,
     Row(usize),
@@ -324,6 +323,7 @@ struct App {
     br: Option<bridge::Bridge>,
     br_open: bool,
     br_state: String,
+    br_err: String,
     br_has_token: bool,
     br_level: f32,
     br_devices: Vec<String>,
@@ -410,7 +410,7 @@ impl App {
             Hit::Again => self.tab(1),
             Hit::Quick => self.tab(2),
             Hit::BrRow => self.r(12, Y_BR, W - 12, Y_BR + 32),
-            Hit::BrToken | Hit::BrDevice | Hit::BrGuild | Hit::BrChannel | Hit::BrGo => {
+            Hit::BrToken | Hit::BrDevice | Hit::BrChannel | Hit::BrGo => {
                 let k = self.br_rows().iter().position(|&x| x == h).unwrap_or(0) as i32;
                 let t = Y_BR + 36 + k * BR_ROW;
                 self.r(12, t, W - 12, t + 30)
@@ -439,7 +439,11 @@ impl App {
     }
     fn br_rows(&self) -> Vec<Hit> {
         if self.br_has_token {
-            vec![Hit::BrDevice, Hit::BrGuild, Hit::BrChannel, Hit::BrGo]
+            let mut v = vec![Hit::BrDevice, Hit::BrChannel, Hit::BrGo];
+            if self.br_state == "error" {
+                v.push(Hit::BrToken); // token rechazado: se puede pegar otro
+            }
+            v
         } else {
             vec![Hit::BrToken]
         }
@@ -578,15 +582,21 @@ impl App {
         let it = |title: &str, sub: String, pick: &str| Item { id: None, list: None, title: title.into(), sub, pick: Some(pick.into()) };
         let items: Vec<Item> = match t {
             Hit::BrDevice => self.br_devices.iter().map(|d| it(short_dev(d), String::new(), d)).collect(),
-            Hit::BrGuild => self.br_guilds.iter().map(|g| it(&g.name, format!("{} canales de voz", g.channels.len()), &g.id)).collect(),
-            _ => self.br_guild_ref().map(|g| g.channels.iter().map(|(id, n)| it(n, String::new(), id)).collect()).unwrap_or_default(),
+            // El bot vive en un servidor: los canales de todos van juntos (el servidor solo se muestra si hay varios).
+            _ => {
+                let many = self.br_guilds.len() > 1;
+                self.br_guilds
+                    .iter()
+                    .flat_map(|g| g.channels.iter().map(move |(id, n)| (g, id, n)))
+                    .map(|(g, id, n)| it(n, if many { g.name.clone() } else { String::new() }, &format!("{}:{id}", g.id)))
+                    .collect()
+            }
         };
         if items.is_empty() {
             self.flash(match t {
                 Hit::BrDevice => "No hay entradas de audio",
-                Hit::BrGuild => "El bot no está en ningún servidor (o sigue conectando)",
-                _ if self.br_guild.is_none() => "Elegí un servidor primero",
-                _ => "Ese servidor no tiene canales de voz",
+                _ if self.br_guilds.is_empty() => "El bot no está en ningún servidor (o sigue conectando)",
+                _ => "El servidor no tiene canales de voz",
             });
             return;
         }
@@ -669,7 +679,8 @@ impl App {
                     self.br_has_token = false;
                 }
                 if self.br_state == "error" {
-                    let m = format!("Puente: {}", v["msg"].as_str().unwrap_or("error"));
+                    self.br_err = v["msg"].as_str().unwrap_or("error").to_string();
+                    let m = format!("Puente: {}", self.br_err);
                     self.flash(&m);
                 }
                 if self.br_state != "transmitiendo" {
@@ -691,16 +702,13 @@ impl App {
 
     fn play(&mut self, i: usize, radio: bool) {
         let Some(it) = self.items.get(i) else { return };
-        if let (Some(v), t @ (Hit::BrDevice | Hit::BrGuild | Hit::BrChannel)) = (it.pick.clone(), self.shown) {
-            match t {
-                Hit::BrDevice => self.br_device = v,
-                Hit::BrGuild => {
-                    if self.br_guild.as_deref() != Some(v.as_str()) {
-                        self.br_channel = None;
-                    }
-                    self.br_guild = Some(v);
+        if let (Some(v), t @ (Hit::BrDevice | Hit::BrChannel)) = (it.pick.clone(), self.shown) {
+            match (t, v.split_once(':')) {
+                (Hit::BrChannel, Some((g, c))) => {
+                    self.br_guild = Some(g.into());
+                    self.br_channel = Some(c.into());
                 }
-                _ => self.br_channel = Some(v),
+                _ => self.br_device = v,
             }
             self.clear_search();
             return;
@@ -779,13 +787,13 @@ impl App {
             },
             Hit::BrRow => {
                 self.br_open = !self.br_open;
-                if !self.br_open && matches!(self.shown, Hit::BrDevice | Hit::BrGuild | Hit::BrChannel) {
+                if !self.br_open && matches!(self.shown, Hit::BrDevice | Hit::BrChannel) {
                     self.clear_search();
                 }
                 self.invalidate();
             }
             Hit::BrToken => self.br_paste_token(),
-            Hit::BrDevice | Hit::BrGuild | Hit::BrChannel => self.br_pick(self.hit(x, y)),
+            Hit::BrDevice | Hit::BrChannel => self.br_pick(self.hit(x, y)),
             Hit::BrGo => self.br_go(),
             Hit::Row(i) => self.play(i, false),
             Hit::Radio(i) => self.play(i, true),
@@ -1186,7 +1194,7 @@ impl App {
                 "conectando" => "Puente Discord · conectando…".into(),
                 "listo" => "Puente Discord · listo".into(),
                 "sin_token" => "Puente Discord · falta token".into(),
-                "error" => "Puente Discord · error".into(),
+                "error" => format!("Puente Discord · {}", self.br_err),
                 _ => "Puente Discord".into(),
             };
             let tz = RECT { left: z.left + self.px(26), top: z.top, right: z.right - self.px(26), bottom: z.bottom - self.px(2) };
@@ -1199,7 +1207,6 @@ impl App {
                     let (label, value) = match h {
                         Hit::BrToken => ("", "Pegar token del bot (copialo y tocá acá)".to_string()),
                         Hit::BrDevice => ("Entrada", short_dev(&self.br_device).to_string()),
-                        Hit::BrGuild => ("Servidor", self.br_guild_ref().map(|g| g.name.clone()).unwrap_or_else(|| "elegir…".into())),
                         Hit::BrChannel => ("Canal", self.br_channel_name().map(String::from).unwrap_or_else(|| "elegir…".into())),
                         _ => ("", if self.br_busy() { "Salir del canal".into() } else { "Conectar".into() }),
                     };
@@ -1599,6 +1606,7 @@ fn main() {
             br: None,
             br_open: false,
             br_state: String::new(),
+            br_err: String::new(),
             br_has_token: false,
             br_level: 0.0,
             br_devices: Vec::new(),

@@ -16,7 +16,7 @@ use std::{
     time::Duration,
 };
 use tokio::io::{AsyncBufReadExt, BufReader};
-use twilight_gateway::{Event, EventTypeFlags, Intents, Shard, ShardId, StreamExt as _};
+use twilight_gateway::{Event, EventTypeFlags, Intents, Shard, ShardId, ShardState, StreamExt as _};
 use twilight_model::{channel::ChannelType, gateway::payload::incoming::GuildCreate, id::Id};
 
 fn emit(v: Value) {
@@ -155,9 +155,18 @@ pub async fn serve() {
                         guilds.lock().unwrap().remove(&g.id.get());
                         emit_guilds(&guilds);
                     }
+                    // Cierre fatal (token invalido, intents): sin esto la card quedaba en "conectando…".
+                    Event::GatewayClose(f) if shard.state() == ShardState::FatallyClosed => {
+                        match f.map(|f| f.code).unwrap_or(0) {
+                            4004 => state("error", "token inválido"),
+                            c => state("error", &format!("Discord cerró la conexión ({c})")),
+                        }
+                        return;
+                    }
                     _ => {}
                 }
             }
+            state("error", "desconectado de Discord");
         });
         Some((sb, h))
     };

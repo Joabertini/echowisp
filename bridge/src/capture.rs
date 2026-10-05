@@ -10,11 +10,16 @@ use std::{
 };
 use symphonia_core::io::MediaSource;
 
+/// Entradas sin repetidos (Windows puede listar el mismo nombre dos veces), cables virtuales primero.
 pub fn input_devices() -> Vec<String> {
-    cpal::default_host()
-        .input_devices()
-        .map(|it| it.filter_map(|d| d.name().ok()).collect())
-        .unwrap_or_default()
+    let mut v: Vec<String> = Vec::new();
+    for n in cpal::default_host().input_devices().map(|it| it.filter_map(|d| d.name().ok()).collect::<Vec<_>>()).unwrap_or_default() {
+        if !v.contains(&n) {
+            v.push(n);
+        }
+    }
+    v.sort_by_key(|n| !n.starts_with("CABLE"));
+    v
 }
 
 pub fn output_devices() -> Vec<String> {
