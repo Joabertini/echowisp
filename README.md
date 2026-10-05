@@ -12,6 +12,22 @@ Kenku FM). Navegador: cualquier Chromium detectado (Brave, Chrome, Edge, Vivaldi
 portátil, que se baja a la carpeta de la app. Solo Brave bloquea anuncios de forma nativa (Shields).
 Por usuario, sin permisos de administrador.
 
+## Discord: aviso para forks
+
+El módulo de Discord **solo abre Discord web en una ventana normal del navegador**. No inyecta scripts,
+no lee el estado interno de Discord, no aprieta botones por el usuario y la ventana se abre sin puerto
+de depuración. Lo hicimos así a propósito: automatizar una cuenta de usuario (self-bot) o modificar el
+cliente de Discord (scripts, CSS, extensiones) va contra sus
+[Términos](https://discord.com/terms) y puede terminar en la **suspensión de la cuenta**.
+
+Si forkeás el proyecto, tené cuidado con `launch_discord` (`src/brave.rs`) y la fila de Discord de la
+card: agregar controles "dentro" de la card (mute, ensordecer, canal, quién habla) leyendo o manejando
+Discord web pone en riesgo la cuenta de quien lo use. Lo intentamos y lo sacamos por eso. Los flags del
+navegador (memoria, GPU) son configuración de nuestro Brave y no tocan Discord.
+
+El puente (`bridge/`) usa un **bot** con su propio token y la API oficial para bots: no usa la cuenta
+del usuario.
+
 ## Uso
 
 - Acceso directo: escritorio y menú Inicio → **YTM Float**. Instalado en `%LOCALAPPDATA%\Programs\ytm-float\`.

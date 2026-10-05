@@ -223,6 +223,8 @@ pub fn launch_login(exe: &Path, url: &str) -> io::Result<Proc> {
 
 /// Discord web en una ventana normal y visible, con perfil propio. No se inyecta nada: los botones
 /// son los de Discord. Proceso aparte para que al cerrarla vuelva toda la RAM.
+/// OJO en forks: no inyectar scripts/CSS ni abrir puerto de depuracion aca. Manejar una cuenta de
+/// usuario es self-bot y Discord puede suspenderla (ver README, "Discord: aviso para forks").
 pub fn launch_discord(exe: &Path, x: i32, y: i32, w: i32, h: i32) -> io::Result<Proc> {
     let prof = data_dir().join("perfil-discord");
     std::fs::create_dir_all(&prof)?;
