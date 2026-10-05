@@ -44,6 +44,7 @@
       title: ad ? 'Anuncio' : (m?.title ?? ''), artist: ad ? '' : (m?.artist ?? ''),
       paused: v?.paused ?? true, pos: v?.currentTime ?? 0, dur: (v?.duration > 0 && isFinite(v.duration)) ? v.duration : 0,
       logged: !!cfg('LOGGED_IN'), ad,
+      repeat: document.querySelector('ytmusic-player-bar')?.getAttribute('repeat-mode') ?? 'NONE',
     };
   };
 
@@ -51,7 +52,7 @@
   let last = '';
   const emit = (force) => {
     const s = state();
-    const key = `${s.title}|${s.artist}|${s.paused}|${Math.round(s.dur)}|${s.ad}`;
+    const key = `${s.title}|${s.artist}|${s.paused}|${Math.round(s.dur)}|${s.ad}|${s.repeat}|${s.logged}`;
     if (!force && key === last) return;
     last = key;
     try { window.__ytmEvt?.(JSON.stringify(s)); } catch {}
@@ -72,17 +73,16 @@
 
   const play = async (arg) => {
     const list = arg.radio && arg.v ? 'RDAMVM' + arg.v : arg.list;
-    const cur = () => player()?.getVideoData?.()?.video_id;
-    const before = cur();
+    // Se verifica por la URL: durante un anuncio el player reporta el video del anuncio.
+    const q = () => new URLSearchParams(location.search);
     const watchEndpoint = {};
     if (arg.v) watchEndpoint.videoId = arg.v;
     if (list) watchEndpoint.playlistId = list;
     document.querySelector('ytmusic-app')?.dispatchEvent(new CustomEvent('yt-navigate', {
       bubbles: true, composed: true, detail: { endpoint: { watchEndpoint } },
     }));
-    const done = () => arg.v
-      ? cur() === arg.v && (arg.v !== before || new URLSearchParams(location.search).get('list') === list)
-      : new URLSearchParams(location.search).get('list') === list && !!cur();
+    const done = () => location.pathname === '/watch'
+      && (!arg.v || q().get('v') === arg.v) && (!list || q().get('list') === list);
     for (let i = 0; i < 40; i++) { if (done()) return { spa: true }; await sleep(100); }
     const p = new URLSearchParams();
     if (arg.v) p.set('v', arg.v);
@@ -113,6 +113,8 @@
     },
     next() { document.querySelector('ytmusic-player-bar .next-button')?.click(); },
     prev() { document.querySelector('ytmusic-player-bar .previous-button')?.click(); },
+    shuffle() { document.querySelector('ytmusic-player-bar .shuffle')?.click(); },
+    repeat() { document.querySelector('ytmusic-player-bar .repeat')?.click(); },
     seek(t) { const v = video(); if (v) v.currentTime = t; },
     state,
   };
