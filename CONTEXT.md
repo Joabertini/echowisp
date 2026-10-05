@@ -37,6 +37,8 @@ Funciona con el Brave del usuario cerrado. Prioridad: recursos mínimos y fluide
 - `DrawTextW` con string vacío revienta (puntero de Vec vacío) → se saltea.
 - Estantes de portada (`browse FEmusic_home`): se buscan por título es/en ("Vuelve a escucharlo",
   "Selecciones rápidas") siguiendo `nextContinuationData`; los rápidos vienen en la 2ª página (medido 05-10).
+- Ctrl+Alt+M lo tiene registrado otra app del usuario (medido 05-10 con ytm-float cerrado) → ocultar
+  pasó a Ctrl+Alt+H y colapsar a Ctrl+Alt+N. Atajos que no se registran quedan en `engine.log`.
 - Volumen por `movie_player.setVolume/mute` (sincroniza con la UI de YTM), no `video.volume`.
 - Ancho 240 = cinco controles + margen. Colapsada (doble clic, `WM_NCLBUTTONDBLCLK`) mide lo que el texto;
   al cambiar de ancho se conserva el centro y `pos.txt` guarda la posición de la tarjeta expandida.

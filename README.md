@@ -20,7 +20,8 @@ controla un Brave invisible (headless, perfil propio) por CDP. Brave Shields act
 |---|---|
 | Ctrl+Alt+Espacio | Play / pausa |
 | Ctrl+Alt+→ / ← | Siguiente / anterior |
-| Ctrl+Alt+M | Mostrar / ocultar |
+| Ctrl+Alt+H | Mostrar / ocultar |
+| Ctrl+Alt+N | Colapsar / expandir |
 | Ctrl+Alt+B | Mostrar y buscar |
 | Teclas multimedia | Igual que arriba (si ninguna otra app las tomó) |
 
