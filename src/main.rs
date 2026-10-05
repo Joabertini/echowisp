@@ -16,7 +16,7 @@ use std::{
 use windows_sys::Win32::{
     Foundation::*,
     Graphics::Gdi::*,
-    System::{DataExchange::*, LibraryLoader::GetModuleHandleW, Memory::*},
+    System::{DataExchange::*, LibraryLoader::GetModuleHandleW, Memory::*, Threading::CreateMutexW},
     UI::{HiDpi::*, Input::KeyboardAndMouse::*, WindowsAndMessaging::*},
 };
 
@@ -55,6 +55,25 @@ const T_SEARCH: usize = 1;
 const T_TICK: usize = 2;
 const T_MSG: usize = 3;
 const T_CARET: usize = 4;
+
+const HK_TOGGLE: i32 = 1;
+const HK_NEXT: i32 = 2;
+const HK_PREV: i32 = 3;
+const HK_SHOW: i32 = 4;
+const HK_SEARCH: i32 = 5;
+const HK_MEDIA_PLAY: i32 = 6;
+const HK_MEDIA_NEXT: i32 = 7;
+const HK_MEDIA_PREV: i32 = 8;
+const HOTKEYS: &[(i32, HOT_KEY_MODIFIERS, VIRTUAL_KEY)] = &[
+    (HK_TOGGLE, MOD_CONTROL | MOD_ALT, VK_SPACE),
+    (HK_NEXT, MOD_CONTROL | MOD_ALT, VK_RIGHT),
+    (HK_PREV, MOD_CONTROL | MOD_ALT, VK_LEFT),
+    (HK_SHOW, MOD_CONTROL | MOD_ALT, 0x4D), // M
+    (HK_SEARCH, MOD_CONTROL | MOD_ALT, 0x42), // B
+    (HK_MEDIA_PLAY, 0, VK_MEDIA_PLAY_PAUSE),
+    (HK_MEDIA_NEXT, 0, VK_MEDIA_NEXT_TRACK),
+    (HK_MEDIA_PREV, 0, VK_MEDIA_PREV_TRACK),
+];
 
 const K_SEARCH: u32 = 1 << 24;
 const K_LISTS: u32 = 2 << 24;
@@ -761,6 +780,15 @@ impl App {
     }
 }
 
+/// Muestra la ventana arriba de todo; con `focus` tambien le da el teclado.
+unsafe fn show(hwnd: HWND, focus: bool) {
+    ShowWindow(hwnd, if focus { SW_SHOW } else { SW_SHOWNOACTIVATE });
+    SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | if focus { 0 } else { SWP_NOACTIVATE });
+    if focus {
+        SetForegroundWindow(hwnd);
+    }
+}
+
 unsafe fn clipboard() -> String {
     if OpenClipboard(null_mut()) == 0 {
         return String::new();
@@ -833,6 +861,33 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
             } else {
                 HTCLIENT as isize
             }
+        }
+        // Clic en botones sin robarle el foco al juego; solo el buscador toma el teclado.
+        WM_MOUSEACTIVATE => {
+            let mut p: POINT = zeroed();
+            GetCursorPos(&mut p);
+            ScreenToClient(hwnd, &mut p);
+            if a.hit(p.x, p.y) == Hit::Field { MA_ACTIVATE as isize } else { MA_NOACTIVATE as isize }
+        }
+        WM_HOTKEY => {
+            match wp as i32 {
+                HK_TOGGLE | HK_MEDIA_PLAY => a.toggle(),
+                HK_NEXT | HK_MEDIA_NEXT => a.cmd("next"),
+                HK_PREV | HK_MEDIA_PREV => a.cmd("prev"),
+                HK_SHOW => {
+                    if IsWindowVisible(hwnd) != 0 {
+                        ShowWindow(hwnd, SW_HIDE);
+                    } else {
+                        show(hwnd, false);
+                    }
+                }
+                HK_SEARCH => {
+                    show(hwnd, true);
+                    a.clear_search();
+                }
+                _ => {}
+            }
+            0
         }
         WM_LBUTTONDOWN => {
             a.click(mx, my);
@@ -935,6 +990,9 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
             0
         }
         WM_DESTROY => {
+            for &(id, _, _) in HOTKEYS {
+                UnregisterHotKey(hwnd, id);
+            }
             save_pos(hwnd);
             a.eng.shutdown();
             PostQuitMessage(0);
@@ -950,6 +1008,15 @@ fn main() {
             let _ = std::fs::create_dir_all(brave::data_dir());
             let _ = std::fs::write(brave::data_dir().join("panic.txt"), i.to_string());
         }));
+        // Una sola instancia: dos se pelearian por el mismo perfil de Brave.
+        CreateMutexW(null(), 0, wide("ytm-float-instancia").as_ptr());
+        if GetLastError() == ERROR_ALREADY_EXISTS {
+            let w = FindWindowW(wide("ytm-float").as_ptr(), null());
+            if !w.is_null() {
+                show(w, true);
+            }
+            return;
+        }
         SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_SYSTEM_AWARE);
         let scale = GetDpiForSystem() as f32 / 96.0;
         let hinst = GetModuleHandleW(null());
@@ -1009,6 +1076,10 @@ fn main() {
         APP = Box::into_raw(a);
         app().render(); // una ventana en capas no se ve hasta el primer UpdateLayeredWindow
         ShowWindow(hwnd, SW_SHOWNOACTIVATE);
+        // Atajos globales (andan dentro de juegos). Si otra app ya tiene alguno, se ignora.
+        for &(id, m, vk) in HOTKEYS {
+            RegisterHotKey(hwnd, id, m | MOD_NOREPEAT, vk as u32);
+        }
 
         let mut m: MSG = zeroed();
         while GetMessageW(&mut m, null_mut(), 0, 0) > 0 {
