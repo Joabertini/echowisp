@@ -22,13 +22,16 @@ use windows_sys::Win32::{
 
 use brave::wide;
 
-// Medidas en px a 96 dpi; se escalan con `px`.
-const W: i32 = 360;
+// Medidas en px a 96 dpi; se escalan con `px`. El ancho es el de los cinco controles + margen.
+const W: i32 = 240;
 const RADIUS: f32 = 16.0;
-const Y_CTRL: i32 = 58;
-const Y_PROG: i32 = 102;
-const Y_SRCH: i32 = 128;
-const H_BASE: i32 = 176;
+const H_MINI: i32 = 50; // tarjeta colapsada: solo cancion y artista
+const Y_CTRL: i32 = 50;
+const Y_PROG: i32 = 92;
+const Y_VOL: i32 = 114;
+const Y_SRCH: i32 = 140;
+const Y_TABS: i32 = 182;
+const H_BASE: i32 = 230;
 const ROW: i32 = 40;
 const MAX_ROWS: usize = 8;
 
@@ -95,8 +98,12 @@ enum Hit {
     Next,
     Repeat,
     Bar,
+    Vol,
+    VolBar,
     Field,
     Lists,
+    Again,
+    Quick,
     Row(usize),
     Radio(usize),
 }
@@ -204,6 +211,35 @@ impl Canvas {
         SelectObject(self.dc, old);
         sz.cx
     }
+
+    /// Texto centrado que puede partirse en dos lineas.
+    unsafe fn text_wrap(&self, f: HFONT, s: &str, r: RECT, c: u32) {
+        let w: Vec<u16> = s.encode_utf16().collect();
+        let old = SelectObject(self.dc, f);
+        SetTextColor(self.dc, c);
+        let fmt = DT_CENTER | DT_WORDBREAK | DT_NOPREFIX;
+        let mut m = r;
+        DrawTextW(self.dc, w.as_ptr(), w.len() as i32, &mut m, fmt | DT_CALCRECT);
+        let mut out = r;
+        out.top = r.top + ((r.bottom - r.top) - (m.bottom - m.top)) / 2;
+        DrawTextW(self.dc, w.as_ptr(), w.len() as i32, &mut out, fmt);
+        SelectObject(self.dc, old);
+    }
+}
+
+/// Ancho de un texto sin lienzo (para dimensionar la tarjeta colapsada).
+unsafe fn measure(f: HFONT, s: &str) -> i32 {
+    if s.is_empty() {
+        return 0;
+    }
+    let dc = CreateCompatibleDC(null_mut());
+    let w: Vec<u16> = s.encode_utf16().collect();
+    let old = SelectObject(dc, f);
+    let mut sz: SIZE = zeroed();
+    GetTextExtentPoint32W(dc, w.as_ptr(), w.len() as i32, &mut sz);
+    SelectObject(dc, old);
+    DeleteDC(dc);
+    sz.cx
 }
 
 impl Drop for Canvas {
@@ -244,11 +280,18 @@ struct App {
     logged: bool,
     ready: bool,
     repeat: String,
+    vol: f64,
+    muted: bool,
+    vol_at: Instant, // ultimo cambio local: el estado de la pagina no lo pisa por un rato
+    vol_sent: i32,
+    dragging: bool,
+    mini: bool,
     // busqueda
     query: String,
     active: bool,
     caret_on: bool,
     items: Vec<Item>,
+    shown: Hit, // pestaña cuyos resultados estan a la vista
     scroll: usize,
     sel: Option<usize>,
     hover: Hit,
@@ -281,8 +324,34 @@ impl App {
         self.items.len().min(MAX_ROWS)
     }
     fn height(&self) -> i32 {
+        if self.mini {
+            return self.px(H_MINI);
+        }
         let n = self.rows_visible() as i32;
         self.px(if n > 0 { H_BASE + n * ROW + 8 + 12 } else { H_BASE })
+    }
+    /// Colapsada, la tarjeta mide lo que el nombre de la cancion y el artista.
+    fn width(&self) -> i32 {
+        if !self.mini {
+            return self.px(W);
+        }
+        let (l1, l2) = self.lines();
+        let l2 = if self.msg.is_empty() { l2 } else { self.msg.as_str() };
+        let tw = unsafe { measure(self.f.title, l1).max(measure(self.f.small, l2)) };
+        (tw + self.px(36)).clamp(self.px(110), self.px(W))
+    }
+    fn lines(&self) -> (&str, &str) {
+        if !self.ready {
+            (self.status.as_str(), "")
+        } else if self.title.is_empty() {
+            ("Nada sonando", if self.logged { "Buscá o abrí tus listas" } else { "Sin sesión · tocá el ícono" })
+        } else {
+            (self.title.as_str(), self.artist.as_str())
+        }
+    }
+    /// Caja de cancion y artista: doble clic colapsa o expande.
+    fn in_title_box(&self, x: i32, y: i32) -> bool {
+        self.mini || (x >= self.px(40) && x < self.px(W - 40) && y < self.px(Y_CTRL))
     }
     fn ctrl_center(&self, k: i32) -> i32 {
         W / 2 + k * 46
@@ -291,18 +360,27 @@ impl App {
     // Zonas clickeables (en px de 96 dpi).
     fn zone(&self, h: Hit) -> RECT {
         match h {
-            Hit::Close => self.r(W - 40, 12, W - 12, 40),
-            Hit::Login => self.r(W - 70, 12, W - 42, 40),
+            Hit::Close => self.r(W - 36, 4, W - 8, 32),
+            Hit::Login => self.r(8, 4, 36, 32),
             Hit::Shuffle => self.ctrl(-2),
             Hit::Prev => self.ctrl(-1),
             Hit::Play => self.ctrl(0),
             Hit::Next => self.ctrl(1),
             Hit::Repeat => self.ctrl(2),
             Hit::Bar => self.r(54, Y_PROG, W - 54, Y_PROG + 20),
-            Hit::Field => self.r(12, Y_SRCH, W - 86, Y_SRCH + 36),
-            Hit::Lists => self.r(W - 80, Y_SRCH, W - 12, Y_SRCH + 36),
+            Hit::Vol => self.r(20, Y_VOL, 46, Y_VOL + 20),
+            Hit::VolBar => self.r(54, Y_VOL, W - 54, Y_VOL + 20),
+            Hit::Field => self.r(12, Y_SRCH, W - 12, Y_SRCH + 36),
+            Hit::Lists => self.tab(0),
+            Hit::Again => self.tab(1),
+            Hit::Quick => self.tab(2),
             _ => RECT { left: 0, top: 0, right: 0, bottom: 0 },
         }
+    }
+    fn tab(&self, k: i32) -> RECT {
+        let w = (W - 24 - 2 * 6) / 3;
+        let l = 12 + k * (w + 6);
+        self.r(l, Y_TABS, l + w, Y_TABS + 36)
     }
     fn ctrl(&self, k: i32) -> RECT {
         let c = self.ctrl_center(k);
@@ -321,8 +399,12 @@ impl App {
     }
 
     fn hit(&self, x: i32, y: i32) -> Hit {
+        if self.mini {
+            return Hit::None;
+        }
         let inside = |r: RECT| x >= r.left && x < r.right && y >= r.top && y < r.bottom;
-        let mut hs = vec![Hit::Close, Hit::Shuffle, Hit::Prev, Hit::Play, Hit::Next, Hit::Repeat, Hit::Field, Hit::Lists];
+        let mut hs = vec![Hit::Close, Hit::Shuffle, Hit::Prev, Hit::Play, Hit::Next, Hit::Repeat,
+            Hit::Vol, Hit::VolBar, Hit::Field, Hit::Lists, Hit::Again, Hit::Quick];
         if self.ready && !self.logged {
             hs.push(Hit::Login);
         }
@@ -371,12 +453,53 @@ impl App {
     fn clear_search(&mut self) {
         self.seq += 1; // descarta respuestas en vuelo
         self.query.clear();
+        self.shown = Hit::None;
         unsafe { KillTimer(self.hwnd, T_SEARCH) };
         self.set_items(Vec::new());
     }
 
+    /// Listas / Escuchar otra vez / Seleccion rapida; tocar la pestaña abierta la cierra.
+    fn open_tab(&mut self, t: Hit) {
+        if self.shown == t {
+            self.clear_search();
+            return;
+        }
+        self.clear_search();
+        self.shown = t;
+        let tag = K_LISTS | (self.seq & 0xffffff);
+        match t {
+            Hit::Again => self.eng.call("home", json!("again"), tag),
+            Hit::Quick => self.eng.call("home", json!("quick"), tag),
+            _ => self.eng.call("playlists", Value::Null, tag),
+        }
+        self.flash("Cargando…");
+    }
+
+    fn set_vol(&mut self, v: f64) {
+        self.vol = v.clamp(0.0, 100.0).round();
+        self.muted = false;
+        self.vol_at = Instant::now();
+        self.invalidate();
+        if self.vol as i32 != self.vol_sent {
+            self.vol_sent = self.vol as i32;
+            self.eng.call("volume", json!(self.vol_sent), K_OTHER);
+        }
+    }
+
+    fn vol_from_x(&mut self, x: i32) {
+        let b = self.zone(Hit::VolBar);
+        self.set_vol((x - b.left) as f64 / (b.right - b.left) as f64 * 100.0);
+    }
+
+    fn toggle_mini(&mut self) {
+        self.mini = !self.mini;
+        self.clear_search();
+        self.hover = Hit::None;
+    }
+
     fn query_changed(&mut self) {
         self.caret_on = true;
+        self.shown = Hit::None;
         unsafe { SetTimer(self.hwnd, T_SEARCH, 250, None) };
         self.invalidate();
     }
@@ -432,11 +555,17 @@ impl App {
                 let eng = self.eng.clone();
                 std::thread::spawn(move || eng.login());
             }
-            Hit::Lists => {
-                self.seq += 1;
-                self.query.clear();
-                self.eng.call("playlists", Value::Null, K_LISTS | (self.seq & 0xffffff));
-                self.flash("Cargando listas…");
+            Hit::Lists | Hit::Again | Hit::Quick => self.open_tab(self.hit(x, y)),
+            Hit::Vol => {
+                self.muted = !self.muted;
+                self.vol_at = Instant::now();
+                self.invalidate();
+                self.cmd("mute");
+            }
+            Hit::VolBar => {
+                self.dragging = true;
+                unsafe { SetCapture(self.hwnd) };
+                self.vol_from_x(x);
             }
             Hit::Bar => {
                 let b = self.zone(Hit::Bar);
@@ -481,6 +610,11 @@ impl App {
                 self.dur = s["dur"].as_f64().unwrap_or(0.0);
                 self.logged = s["logged"].as_bool().unwrap_or(false);
                 self.repeat = s["repeat"].as_str().unwrap_or("NONE").to_string();
+                if self.vol_at.elapsed().as_millis() > 800 && !self.dragging {
+                    self.vol = s["vol"].as_f64().unwrap_or(100.0);
+                    self.vol_sent = self.vol as i32;
+                    self.muted = s["muted"].as_bool().unwrap_or(false);
+                }
                 self.at = Instant::now();
                 self.update_tick();
             }
@@ -490,6 +624,9 @@ impl App {
                 let current = (tag & 0xffffff) == (self.seq & 0xffffff);
                 if !ok {
                     if kind == K_OTHER || current {
+                        if kind == K_LISTS {
+                            self.shown = Hit::None;
+                        }
                         self.flash(r["error"].as_str().unwrap_or("error"));
                     }
                     return;
@@ -510,7 +647,12 @@ impl App {
                         .unwrap_or_default();
                     self.msg.clear();
                     if items.is_empty() {
-                        self.flash(if kind == K_LISTS { "Sin listas (¿sesión iniciada?)" } else { "Sin resultados" });
+                        self.flash(match (kind, self.shown) {
+                            (K_LISTS, Hit::Lists) => "Sin listas (¿sesión iniciada?)",
+                            (K_LISTS, _) => "No encontré esa sección",
+                            _ => "Sin resultados",
+                        });
+                        self.shown = Hit::None;
                     }
                     self.set_items(items);
                 } else if kind == K_OTHER && r["data"]["spa"] == false {
@@ -580,7 +722,7 @@ impl App {
 
     unsafe fn render(&mut self) {
         self.dirty = false;
-        let (w, h) = (self.px(W), self.height());
+        let (w, h) = (self.width(), self.height());
         if self.canvas.as_ref().map_or(true, |c| c.w != w || c.h != h) {
             self.canvas = None;
             self.canvas = Some(Canvas::new(w, h));
@@ -594,7 +736,21 @@ impl App {
         cv.round(0.0, 0.0, wf, h as f32, RADIUS * s, HAIRLINE);
         cv.round(1.0, 1.0, wf - 1.0, h as f32 - 1.0, RADIUS * s - 1.0, BG);
 
-        // Punto de estado.
+        let (line1, line2) = self.lines();
+        let line2 = if self.msg.is_empty() { line2 } else { self.msg.as_str() };
+        let c2 = if self.msg.is_empty() { DIM } else { PINK };
+
+        if self.mini {
+            GdiFlush();
+            cv.text(self.f.title, line1, RECT { left: self.px(14), top: self.px(6), right: w - self.px(14), bottom: self.px(27) }, INK, DT_CENTER);
+            cv.text(self.f.small, line2, RECT { left: self.px(14), top: self.px(26), right: w - self.px(14), bottom: self.px(43) }, c2, DT_CENTER);
+            GdiFlush();
+            cv.finish(RADIUS * s);
+            self.present(cv, w, h);
+            return;
+        }
+
+        // Punto de estado (lo reemplaza el icono de usuario si no hay sesion).
         let dot = if !self.ready {
             CYAN
         } else if !self.msg.is_empty() && self.msg.starts_with("Error") {
@@ -606,8 +762,11 @@ impl App {
         } else {
             GREEN
         };
-        let (dx, dy) = (self.pf(20.0), self.pf(22.0));
-        cv.round(dx - self.pf(4.0), dy - self.pf(4.0), dx + self.pf(4.0), dy + self.pf(4.0), self.pf(4.0), dot);
+        let login = self.ready && !self.logged;
+        if !login {
+            let (dx, dy) = (self.pf(22.0), self.pf(18.0));
+            cv.round(dx - self.pf(4.0), dy - self.pf(4.0), dx + self.pf(4.0), dy + self.pf(4.0), self.pf(4.0), dot);
+        }
 
         // Botones redondos del encabezado (hover).
         for hb in [Hit::Close, Hit::Login] {
@@ -629,8 +788,9 @@ impl App {
         let pr = self.pf(if self.hover == Hit::Play { 18.0 } else { 17.0 });
         cv.round(pc - pr, pcy - pr, pc + pr, pcy + pr, pr, INK);
 
-        // Progreso.
-        let (bl, br, by) = (self.pf(54.0), self.pf((W - 54) as f32), self.pf((Y_PROG + 10) as f32));
+        // Progreso y volumen: misma barra fina.
+        let (bl, br) = (self.pf(54.0), self.pf((W - 54) as f32));
+        let by = self.pf((Y_PROG + 10) as f32);
         let bh = self.pf(if self.hover == Hit::Bar { 3.0 } else { 2.0 });
         cv.round(bl, by - bh, br, by + bh, bh, HOVER);
         if self.dur > 0.0 {
@@ -643,14 +803,27 @@ impl App {
                 cv.round(x - self.pf(6.0), by - self.pf(6.0), x + self.pf(6.0), by + self.pf(6.0), self.pf(6.0), INK);
             }
         }
+        let vy = self.pf((Y_VOL + 10) as f32);
+        let vhot = self.hover == Hit::VolBar || self.dragging;
+        let vh = self.pf(if vhot { 3.0 } else { 2.0 });
+        cv.round(bl, vy - vh, br, vy + vh, vh, HOVER);
+        let vx = bl + (br - bl) * (self.vol / 100.0) as f32;
+        if vx - bl > 1.0 {
+            cv.round(bl, vy - vh, vx, vy + vh, vh, if self.muted { DIM3 } else { DIM });
+        }
+        if vhot {
+            cv.round(vx - self.pf(6.0), vy - self.pf(6.0), vx + self.pf(6.0), vy + self.pf(6.0), self.pf(6.0), INK);
+        }
 
-        // Buscador y boton Listas como pastillas.
+        // Buscador de punta a punta y, debajo, las tres pestañas.
         let fz = self.zone(Hit::Field);
         cv.round(fz.left as f32, fz.top as f32, fz.right as f32, fz.bottom as f32, self.pf(12.0),
             if self.active || self.hover == Hit::Field { TAB } else { CARD });
-        let lz = self.zone(Hit::Lists);
-        cv.round(lz.left as f32, lz.top as f32, lz.right as f32, lz.bottom as f32, self.pf(12.0),
-            if self.hover == Hit::Lists { HOVER } else { TAB });
+        for t in [Hit::Lists, Hit::Again, Hit::Quick] {
+            let z = self.zone(t);
+            let bg = if self.shown == t { INDIGO } else if self.hover == t { HOVER } else { TAB };
+            cv.round(z.left as f32, z.top as f32, z.right as f32, z.bottom as f32, self.pf(12.0), bg);
+        }
 
         // Resultados en una tarjeta.
         let n = self.rows_visible();
@@ -682,22 +855,10 @@ impl App {
         GdiFlush();
 
         // ---- Texto ----
-        let tr = if self.ready && !self.logged { W - 74 } else { W - 44 };
-        let (line1, line2) = if !self.ready {
-            (self.status.as_str(), "")
-        } else if self.title.is_empty() {
-            ("Nada sonando", if self.logged { "Buscá una canción o abrí tus listas" } else { "Sin sesión · tocá el ícono de usuario" })
-        } else {
-            (self.title.as_str(), self.artist.as_str())
-        };
-        cv.text(self.f.title, line1, self.r(32, 10, tr, 32), INK, DT_LEFT);
-        if self.msg.is_empty() {
-            cv.text(self.f.small, line2, self.r(32, 31, tr, 48), DIM, DT_LEFT);
-        } else {
-            cv.text(self.f.small, &self.msg, self.r(32, 31, tr, 48), PINK, DT_LEFT);
-        }
+        cv.text(self.f.title, line1, self.r(40, 8, W - 40, 28), INK, DT_CENTER);
+        cv.text(self.f.small, line2, self.r(40, 27, W - 40, 44), c2, DT_CENTER);
         cv.text(self.f.icon, "\u{E8BB}", self.zone(Hit::Close), if self.hover == Hit::Close { INK } else { DIM }, DT_CENTER);
-        if self.ready && !self.logged {
+        if login {
             cv.text(self.f.icon, "\u{E77B}", self.zone(Hit::Login), if self.hover == Hit::Login { INK } else { AMBER }, DT_CENTER);
         }
 
@@ -714,12 +875,23 @@ impl App {
         cv.text(self.f.icon, rg, self.zone(Hit::Repeat), rc, DT_CENTER);
 
         if self.dur > 0.0 {
-            cv.text(self.f.small, &mmss(self.cur_pos()), self.r(10, Y_PROG, 48, Y_PROG + 20), DIM, DT_RIGHT);
-            cv.text(self.f.small, &mmss(self.dur), self.r(W - 48, Y_PROG, W - 10, Y_PROG + 20), DIM, DT_LEFT);
+            cv.text(self.f.small, &mmss(self.cur_pos()), self.r(6, Y_PROG, 48, Y_PROG + 20), DIM, DT_RIGHT);
+            cv.text(self.f.small, &mmss(self.dur), self.r(W - 48, Y_PROG, W - 6, Y_PROG + 20), DIM, DT_LEFT);
         }
+        let vg = if self.muted || self.vol < 1.0 {
+            "\u{E74F}"
+        } else if self.vol < 34.0 {
+            "\u{E993}"
+        } else if self.vol < 67.0 {
+            "\u{E994}"
+        } else {
+            "\u{E995}"
+        };
+        cv.text(self.f.icon, vg, self.zone(Hit::Vol), if self.hover == Hit::Vol { INK } else { DIM }, DT_RIGHT);
+        cv.text(self.f.small, &format!("{}", self.vol as i32), self.r(W - 48, Y_VOL, W - 6, Y_VOL + 20), DIM, DT_LEFT);
 
         cv.text(self.f.icon, "\u{E721}", self.r(22, Y_SRCH, 40, Y_SRCH + 36), DIM3, DT_CENTER);
-        let field = self.r(44, Y_SRCH, W - 96, Y_SRCH + 36);
+        let field = self.r(44, Y_SRCH, W - 24, Y_SRCH + 36);
         if self.query.is_empty() {
             cv.text(self.f.text, "Buscar canción…", field, DIM3, DT_LEFT);
         } else {
@@ -746,7 +918,12 @@ impl App {
             GdiFlush();
             cv.round(x as f32, self.pf((Y_SRCH + 10) as f32), x as f32 + self.pf(1.5).max(1.0), self.pf((Y_SRCH + 26) as f32), 0.5, INDIGO);
         }
-        cv.text(self.f.small, "Listas", self.zone(Hit::Lists), INK, DT_CENTER);
+        for (t, label) in [(Hit::Lists, "Listas"), (Hit::Again, "Escuchar otra vez"), (Hit::Quick, "Selección rápida")] {
+            let mut z = self.zone(t);
+            z.left += self.px(4);
+            z.right -= self.px(4);
+            cv.text_wrap(self.f.small, label, z, if self.shown == t || self.hover == t { INK } else { DIM });
+        }
 
         for vis in 0..n {
             let i = self.scroll + vis;
@@ -763,15 +940,20 @@ impl App {
 
         GdiFlush();
         cv.finish(RADIUS * s);
+        self.present(cv, w, h);
+    }
 
-        // Si al crecer se sale del monitor, se corre hacia arriba lo justo.
+    /// Vuelca el lienzo a la ventana. Si cambia el ancho se mantiene el centro (colapsar
+    /// encoge hacia el medio); si al crecer se sale del monitor, se corre hacia arriba lo justo.
+    unsafe fn present(&mut self, cv: Canvas, w: i32, h: i32) {
         let mut wr: RECT = zeroed();
         GetWindowRect(self.hwnd, &mut wr);
         let mut mi: MONITORINFO = zeroed();
         mi.cbSize = size_of::<MONITORINFO>() as u32;
         GetMonitorInfoW(MonitorFromWindow(self.hwnd, MONITOR_DEFAULTTONEAREST), &mut mi);
+        let left = wr.left + ((wr.right - wr.left) - w) / 2;
         let top = wr.top.min(mi.rcWork.bottom - h).max(mi.rcWork.top);
-        let dst = POINT { x: wr.left, y: top };
+        let dst = POINT { x: left, y: top };
         let size = SIZE { cx: w, cy: h };
         let src = POINT { x: 0, y: 0 };
         let blend = BLENDFUNCTION { BlendOp: AC_SRC_OVER as u8, BlendFlags: 0, SourceConstantAlpha: 255, AlphaFormat: AC_SRC_ALPHA as u8 };
@@ -823,7 +1005,9 @@ unsafe fn save_pos(hwnd: HWND) {
     let mut r: RECT = zeroed();
     GetWindowRect(hwnd, &mut r);
     let _ = std::fs::create_dir_all(brave::data_dir());
-    let _ = std::fs::write(pos_file(), format!("{} {}", r.left, r.top));
+    // Se guarda la posicion de la tarjeta expandida aunque este colapsada (mismo centro).
+    let left = r.left + (r.right - r.left) / 2 - app().px(W) / 2;
+    let _ = std::fs::write(pos_file(), format!("{} {}", left, r.top));
 }
 
 unsafe fn initial_pos(w: i32, h: i32) -> (i32, i32) {
@@ -855,8 +1039,8 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
         WM_NCHITTEST => {
             let mut p = POINT { x: mx, y: my };
             ScreenToClient(hwnd, &mut p);
-            // El encabezado (fuera de los botones) arrastra la ventana.
-            if p.y < a.px(Y_CTRL) && a.hit(p.x, p.y) == Hit::None {
+            // El encabezado (fuera de los botones) arrastra la ventana; colapsada, toda.
+            if a.mini || (p.y < a.px(Y_CTRL) && a.hit(p.x, p.y) == Hit::None) {
                 HTCAPTION as isize
             } else {
                 HTCLIENT as isize
@@ -882,6 +1066,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
                     }
                 }
                 HK_SEARCH => {
+                    a.mini = false;
                     show(hwnd, true);
                     a.clear_search();
                 }
@@ -889,8 +1074,33 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
             }
             0
         }
+        // Doble clic en la caja de cancion/artista (zona de arrastre) colapsa o expande.
+        WM_NCLBUTTONDBLCLK if wp as u32 == HTCAPTION => {
+            let mut p = POINT { x: mx, y: my };
+            ScreenToClient(hwnd, &mut p);
+            if a.in_title_box(p.x, p.y) {
+                a.toggle_mini();
+            }
+            0
+        }
         WM_LBUTTONDOWN => {
             a.click(mx, my);
+            0
+        }
+        WM_LBUTTONUP => {
+            if a.dragging {
+                a.dragging = false;
+                ReleaseCapture();
+                a.invalidate();
+            }
+            0
+        }
+        WM_MOUSEMOVE if a.dragging => {
+            a.vol_from_x(mx);
+            0
+        }
+        WM_CAPTURECHANGED => {
+            a.dragging = false;
             0
         }
         WM_MOUSEMOVE => {
@@ -923,12 +1133,19 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
             }
             0
         }
+        // Rueda: sobre los resultados desplaza; en el resto de la tarjeta, volumen.
         WM_MOUSEWHEEL => {
             let n = a.items.len();
-            if n > MAX_ROWS {
-                let d = ((wp >> 16) & 0xffff) as i16;
-                a.scroll = if d > 0 { a.scroll.saturating_sub(2) } else { (a.scroll + 2).min(n - MAX_ROWS) };
-                a.invalidate();
+            let d = ((wp >> 16) & 0xffff) as i16;
+            let mut p = POINT { x: mx, y: my };
+            ScreenToClient(hwnd, &mut p);
+            if !a.mini && n > 0 && p.y >= a.px(H_BASE) {
+                if n > MAX_ROWS {
+                    a.scroll = if d > 0 { a.scroll.saturating_sub(2) } else { (a.scroll + 2).min(n - MAX_ROWS) };
+                    a.invalidate();
+                }
+            } else {
+                a.set_vol(a.vol + if d > 0 { 5.0 } else { -5.0 });
             }
             0
         }
@@ -1063,10 +1280,17 @@ fn main() {
             logged: true,
             ready: false,
             repeat: "NONE".into(),
+            vol: 100.0,
+            muted: false,
+            vol_at: Instant::now(),
+            vol_sent: 100,
+            dragging: false,
+            mini: false,
             query: String::new(),
             active: false,
             caret_on: true,
             items: Vec::new(),
+            shown: Hit::None,
             scroll: 0,
             sel: None,
             hover: Hit::None,

@@ -6,7 +6,7 @@
   const player = () => document.getElementById('movie_player');
   const video = () => document.querySelector('video');
 
-  const api = async (ep, body) => {
+  const api = async (ep, body, qs = '') => {
     const headers = { 'Content-Type': 'application/json' };
     const sid = document.cookie.match(/(?:^|; )(?:SAPISID|__Secure-3PAPISID)=([^;]+)/)?.[1];
     if (sid) {
@@ -17,7 +17,7 @@
       headers['X-Origin'] = location.origin;
       headers['X-Goog-AuthUser'] = String(cfg('SESSION_INDEX') ?? 0);
     }
-    const r = await fetch(`/youtubei/v1/${ep}?prettyPrint=false`, {
+    const r = await fetch(`/youtubei/v1/${ep}?prettyPrint=false${qs}`, {
       method: 'POST', headers, credentials: 'include',
       body: JSON.stringify({ context: cfg('INNERTUBE_CONTEXT'), ...body }),
     });
@@ -44,6 +44,7 @@
       title: ad ? 'Anuncio' : (m?.title ?? ''), artist: ad ? '' : (m?.artist ?? ''),
       paused: v?.paused ?? true, pos: v?.currentTime ?? 0, dur: (v?.duration > 0 && isFinite(v.duration)) ? v.duration : 0,
       logged: !!cfg('LOGGED_IN'), ad,
+      vol: p?.getVolume?.() ?? Math.round((v?.volume ?? 1) * 100), muted: p?.isMuted?.() ?? v?.muted ?? false,
       repeat: document.querySelector('ytmusic-player-bar')?.getAttribute('repeat-mode') ?? 'NONE',
     };
   };
@@ -52,7 +53,7 @@
   let last = '';
   const emit = (force) => {
     const s = state();
-    const key = `${s.title}|${s.artist}|${s.paused}|${Math.round(s.dur)}|${s.ad}|${s.repeat}|${s.logged}`;
+    const key = `${s.title}|${s.artist}|${s.paused}|${Math.round(s.dur)}|${s.ad}|${s.repeat}|${s.logged}|${s.vol}|${s.muted}`;
     if (!force && key === last) return;
     last = key;
     try { window.__ytmEvt?.(JSON.stringify(s)); } catch {}
@@ -61,7 +62,7 @@
     const v = video();
     if (!v || v.__ytmHooked) return;
     v.__ytmHooked = true;
-    for (const e of ['play', 'pause', 'loadedmetadata', 'durationchange', 'ended']) v.addEventListener(e, () => emit());
+    for (const e of ['play', 'pause', 'loadedmetadata', 'durationchange', 'ended', 'volumechange']) v.addEventListener(e, () => emit());
     v.addEventListener('seeked', () => emit(true));
   };
   // Chequeo barato cada 1 s: engancha el <video> cuando aparece, detecta cambio de tema
@@ -91,7 +92,34 @@
     return { spa: false };
   };
 
+  // Estantes de la portada ("Vuelve a escucharlo", "Selecciones rápidas"): se buscan por titulo
+  // (es/en) recorriendo las continuaciones; los rapidos suelen estar en la 2a pagina.
+  const SHELVES = { again: /vuelve a escuch|volver a escuch|listen again/i, quick: /r[aá]pida|quick pick/i };
+  const home = async (which) => {
+    let d = await api('browse', { browseId: 'FEmusic_home' });
+    for (let k = 0; k < 5 && d; k++) {
+      const shelf = collect(d, 'musicCarouselShelfRenderer')
+        .find((s) => SHELVES[which].test(txt(s.header?.musicCarouselShelfBasicHeaderRenderer?.title)));
+      if (shelf) {
+        return shelf.contents.map((it) => {
+          const i = it.musicTwoRowItemRenderer ?? it.musicResponsiveListItemRenderer;
+          if (!i) return null;
+          const id = i.playlistItemData?.videoId ?? collect(i, 'watchEndpoint')[0]?.videoId;
+          const list = collect(i, 'watchPlaylistEndpoint')[0]?.playlistId;
+          const title = txt(i.title) || col(i, 0), sub = txt(i.subtitle) || col(i, 1);
+          // Albumes y listas traen lista: se reproducen enteros; lo demas, como cancion.
+          return list ? { list, title, sub } : id ? { id, title, sub } : null;
+        }).filter(Boolean);
+      }
+      const c = collect(d, 'nextContinuationData')[0]?.continuation;
+      if (!c) break;
+      d = await api('browse', {}, `&ctoken=${c}&continuation=${c}&type=next`);
+    }
+    return [];
+  };
+
   const cmds = {
+    home,
     async search(q) {
       const d = await api('search', { query: q, params: 'EgWKAQIIAWoMEA4QChADEAQQCRAF' }); // filtro: canciones
       return collect(d, 'musicResponsiveListItemRenderer').map((i) => ({
@@ -116,6 +144,16 @@
     shuffle() { document.querySelector('ytmusic-player-bar .shuffle')?.click(); },
     repeat() { document.querySelector('ytmusic-player-bar .repeat')?.click(); },
     seek(t) { const v = video(); if (v) v.currentTime = t; },
+    volume(n) {
+      const p = player();
+      if (p?.setVolume) { p.setVolume(n); if (n > 0 && p.isMuted?.()) p.unMute(); } else { const v = video(); if (v) v.volume = n / 100; }
+      emit();
+    },
+    mute() {
+      const p = player();
+      if (p?.isMuted) p.isMuted() ? p.unMute() : p.mute(); else { const v = video(); if (v) v.muted = !v.muted; }
+      emit();
+    },
     state,
   };
 
