@@ -221,6 +221,32 @@ pub fn launch_login(exe: &Path, url: &str) -> io::Result<Proc> {
     spawn(exe, &args)
 }
 
+/// Discord web en una ventana normal y visible, con perfil propio. No se inyecta nada: los botones
+/// son los de Discord. Proceso aparte para que al cerrarla vuelva toda la RAM.
+pub fn launch_discord(exe: &Path, x: i32, y: i32, w: i32, h: i32) -> io::Result<Proc> {
+    let prof = data_dir().join("perfil-discord");
+    std::fs::create_dir_all(&prof)?;
+    let args = [
+        format!("--user-data-dir={}", prof.display()),
+        "--no-first-run".into(),
+        "--no-default-browser-check".into(),
+        "--disable-extensions".into(),
+        "--disable-sync".into(),
+        "--disable-default-apps".into(),
+        // Menos RAM sin tocar Discord, solo nuestro Brave (medido en /login: ~237 MB contra 350-500):
+        // un proceso, sin GPU y JS sin optimizador. La voz (WebRTC) es nativa, no depende del JS.
+        "--single-process".into(),
+        "--disable-gpu".into(),
+        "--in-process-gpu".into(),
+        "--js-flags=--lite-mode".into(),
+        "--disable-features=Translate,MediaRouter,OptimizationHints,BackForwardCache,SpareRendererForSitePerProcess,PaintHolding".into(),
+        format!("--window-position={x},{y}"),
+        format!("--window-size={w},{h}"),
+        "--app=https://discord.com/channels/@me".into(),
+    ];
+    spawn(exe, &args)
+}
+
 pub fn http_get(port: u16, path: &str) -> io::Result<String> {
     // El server de DevTools rechaza HTTP/1.0 y no cierra la conexion: se lee por Content-Length.
     let mut s = TcpStream::connect(("127.0.0.1", port))?;

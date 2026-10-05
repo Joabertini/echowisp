@@ -86,9 +86,6 @@ const HOTKEYS: &[(i32, HOT_KEY_MODIFIERS, VIRTUAL_KEY)] = &[
 const K_SEARCH: u32 = 1 << 24;
 const K_LISTS: u32 = 2 << 24;
 const K_OTHER: u32 = 3 << 24;
-const K_DSC: u32 = 4 << 24;
-const DSC_MEMBER: i32 = 22;
-const DSC_MAX_MEMBERS: usize = 8;
 const K_MASK: u32 = 0xff << 24;
 
 const fn rgb(r: u8, g: u8, b: u8) -> u32 {
@@ -118,13 +115,6 @@ enum Hit {
     BrChannel,
     BrGo,
     DscRow,
-    DscOn,
-    DscOff,
-    DscLogin,
-    DscMute,
-    DscDeaf,
-    DscLeave,
-    DscJoin,
     Row(usize),
     Radio(usize),
 }
@@ -345,11 +335,9 @@ struct App {
     br_device: String,
     br_guild: Option<String>,
     br_channel: Option<String>,
-    // Discord web en pestaña oculta (opcional)
-    dsc_avail: bool, // modulo elegido en el instalador (discord.module junto al exe)
-    dsc_on: bool,
-    dsc_open: bool,
-    dsc: Value, // ultimo estado de discord.js; Null = cargando
+    // Discord: ventana real aparte (opcional, modulo del instalador)
+    dsc_avail: bool, // discord.module junto al exe
+    dsc_win: Option<brave::Proc>,
 }
 
 static mut APP: *mut App = null_mut();
@@ -438,18 +426,6 @@ impl App {
                 let t = self.dsc_top();
                 self.r(12, t, W - 12, t + 32)
             }
-            // Mute / ensordecer / colgar comparten una fila.
-            Hit::DscMute | Hit::DscDeaf | Hit::DscLeave => {
-                let t = self.dsc_row_top(Hit::DscMute);
-                let i = match h { Hit::DscMute => 0, Hit::DscDeaf => 1, _ => 2 };
-                let w = (W - 24 - 12) / 3;
-                let l = 12 + i * (w + 6);
-                self.r(l, t, l + w, t + 30)
-            }
-            Hit::DscOn | Hit::DscOff | Hit::DscLogin | Hit::DscJoin => {
-                let t = self.dsc_row_top(h);
-                self.r(12, t, W - 12, t + 30)
-            }
             _ => RECT { left: 0, top: 0, right: 0, bottom: 0 },
         }
     }
@@ -470,7 +446,7 @@ impl App {
         if !self.dsc_avail {
             return self.dsc_top();
         }
-        self.dsc_top() + 32 + 8 + if self.dsc_open { self.dsc_body_h() } else { 0 }
+        self.dsc_top() + 32 + 8
     }
     fn br_h(&self) -> i32 {
         if self.br.is_none() {
@@ -480,43 +456,6 @@ impl App {
     }
     fn dsc_top(&self) -> i32 {
         Y_BR + self.br_h()
-    }
-    fn dsc_logged(&self) -> bool {
-        self.dsc["logged"] == true
-    }
-    fn dsc_members(&self) -> &[Value] {
-        let m = self.dsc["members"].as_array().map(Vec::as_slice).unwrap_or(&[]);
-        &m[..m.len().min(DSC_MAX_MEMBERS)]
-    }
-    fn dsc_rows(&self) -> Vec<Hit> {
-        if !self.dsc_on {
-            vec![Hit::DscOn]
-        } else if !self.dsc_logged() {
-            vec![Hit::DscLogin, Hit::DscOff]
-        } else {
-            vec![Hit::DscMute, Hit::DscJoin, Hit::DscOff]
-        }
-    }
-    fn dsc_members_h(&self) -> i32 {
-        let n = self.dsc_members().len() as i32;
-        if n > 0 { n * DSC_MEMBER + 6 } else { 0 }
-    }
-    /// Alto de la parte abierta: filas + integrantes del canal (debajo de "Canal").
-    fn dsc_body_h(&self) -> i32 {
-        self.dsc_rows().len() as i32 * BR_ROW + if self.dsc_logged() { self.dsc_members_h() } else { 0 }
-    }
-    fn dsc_row_top(&self, h: Hit) -> i32 {
-        let mut t = self.dsc_top() + 36;
-        for r in self.dsc_rows() {
-            if r == h {
-                break;
-            }
-            t += BR_ROW;
-            if r == Hit::DscJoin {
-                t += self.dsc_members_h();
-            }
-        }
-        t
     }
     fn br_rows(&self) -> Vec<Hit> {
         if self.br_has_token {
@@ -570,12 +509,6 @@ impl App {
         }
         if self.dsc_avail {
             hs.push(Hit::DscRow);
-        }
-        if self.dsc_avail && self.dsc_open {
-            hs.extend(self.dsc_rows());
-            if self.dsc_logged() {
-                hs.extend([Hit::DscDeaf, Hit::DscLeave]);
-            }
         }
         if let Some(h) = hs.into_iter().find(|&h| inside(self.zone(h))) {
             return h;
@@ -710,48 +643,29 @@ impl App {
         }
     }
 
-    fn dsc_click(&mut self, h: Hit) {
-        match h {
-            Hit::DscRow => {
-                self.dsc_open = !self.dsc_open;
-                if !self.dsc_open && self.shown == Hit::DscJoin {
-                    self.clear_search();
-                }
+    /// Abre Discord en una ventana real al costado de la card, o la cierra (vuelve toda su RAM).
+    fn dsc_toggle(&mut self) {
+        if self.dsc_open() {
+            self.dsc_win = None; // Drop cierra el Job object: se lleva todo el proceso
+        } else if let Some(exe) = brave::find_brave() {
+            let (w, h) = (self.px(480), self.px(720));
+            let mut rc = RECT { left: 0, top: 0, right: 0, bottom: 0 };
+            let sw = unsafe { GetSystemMetrics(SM_CXSCREEN) };
+            unsafe { GetWindowRect(self.hwnd, &mut rc) };
+            // A la derecha si entra; si no, a la izquierda.
+            let x = if rc.right + 8 + w <= sw { rc.right + 8 } else { (rc.left - 8 - w).max(0) };
+            match brave::launch_discord(&exe, x, rc.top.max(0), w, h) {
+                Ok(p) => self.dsc_win = Some(p),
+                Err(e) => self.flash(&format!("No pude abrir Discord: {e}")),
             }
-            Hit::DscOn => {
-                self.dsc_on = true;
-                self.dsc = Value::Null;
-                self.eng.set_discord(true);
-                self.flash("Cargando Discord…");
-            }
-            Hit::DscOff => {
-                self.dsc_on = false;
-                self.eng.set_discord(false);
-                self.flash("Discord quitado (la RAM vuelve al reiniciar)");
-            }
-            Hit::DscLogin => {
-                let eng = self.eng.clone();
-                std::thread::spawn(move || eng.login(engine::DISCORD_LOGIN));
-            }
-            Hit::DscMute => self.eng.call_dsc("mute", Value::Null, K_OTHER),
-            Hit::DscDeaf => self.eng.call_dsc("deaf", Value::Null, K_OTHER),
-            Hit::DscLeave => self.eng.call_dsc("leave", Value::Null, K_OTHER),
-            Hit::DscJoin => {
-                if self.shown == Hit::DscJoin {
-                    self.clear_search();
-                } else {
-                    self.clear_search();
-                    self.shown = Hit::DscJoin;
-                    self.eng.call_dsc("channels", Value::Null, K_DSC | (self.seq & 0xffffff));
-                    self.flash("Cargando canales…");
-                }
-            }
-            _ => {}
         }
         self.invalidate();
     }
+    fn dsc_open(&self) -> bool {
+        self.dsc_win.as_ref().is_some_and(|p| !p.wait(0))
+    }
 
-    /// El token se pega desde el portapapeles y nunca se muestra.
+        /// El token se pega desde el portapapeles y nunca se muestra.
     fn br_paste_token(&mut self) {
         let t = unsafe { clipboard() }.trim().to_string();
         if t.split('.').count() != 3 {
@@ -833,11 +747,6 @@ impl App {
 
     fn play(&mut self, i: usize, radio: bool) {
         let Some(it) = self.items.get(i) else { return };
-        if let (Some(v), Hit::DscJoin) = (it.pick.clone(), self.shown) {
-            self.eng.call_dsc("join", json!(v), K_OTHER);
-            self.clear_search();
-            return;
-        }
         if let (Some(v), t @ (Hit::BrDevice | Hit::BrChannel)) = (it.pick.clone(), self.shown) {
             match (t, v.split_once(':')) {
                 (Hit::BrChannel, Some((g, c))) => {
@@ -896,7 +805,7 @@ impl App {
             }
             Hit::Login => {
                 let eng = self.eng.clone();
-                std::thread::spawn(move || eng.login(engine::YTM_LOGIN));
+                std::thread::spawn(move || eng.login());
             }
             Hit::Lists | Hit::Again | Hit::Quick => self.open_tab(self.hit(x, y)),
             Hit::Vol => {
@@ -931,7 +840,7 @@ impl App {
             Hit::BrToken => self.br_paste_token(),
             Hit::BrDevice | Hit::BrChannel => self.br_pick(self.hit(x, y)),
             Hit::BrGo => self.br_go(),
-            h @ (Hit::DscRow | Hit::DscOn | Hit::DscOff | Hit::DscLogin | Hit::DscMute | Hit::DscDeaf | Hit::DscLeave | Hit::DscJoin) => self.dsc_click(h),
+            Hit::DscRow => self.dsc_toggle(),
             Hit::Row(i) => self.play(i, false),
             Hit::Radio(i) => self.play(i, true),
             Hit::None => {}
@@ -950,9 +859,6 @@ impl App {
 
     fn on_engine(&mut self, ev: Ev) {
         match ev {
-            Ev::Discord(v) => {
-                self.dsc = if v["off"] == true { Value::Null } else { v };
-            }
             Ev::Status(s) => {
                 self.status = s;
                 self.ready = false;
@@ -995,7 +901,6 @@ impl App {
                         self.flash(match (kind, self.shown) {
                             (K_LISTS, Hit::Lists) => "Sin listas (¿sesión iniciada?)",
                             (K_LISTS, _) => "No encontré esa sección",
-                            (K_DSC, _) => "Sin canales de voz",
                             _ => "Sin resultados",
                         });
                         self.shown = Hit::None;
@@ -1218,47 +1123,8 @@ impl App {
             let z = self.zone(Hit::DscRow);
             cv.round(z.left as f32, z.top as f32, z.right as f32, z.bottom as f32, self.pf(12.0),
                 if self.hover == Hit::DscRow { HOVER } else { CARD });
-            let dot = if !self.dsc_on {
-                DIM3
-            } else if self.dsc.is_null() {
-                CYAN
-            } else if !self.dsc_logged() {
-                AMBER
-            } else if !self.dsc["channel"].is_null() {
-                GREEN
-            } else {
-                DIM
-            };
             let (dx, dy) = (z.left as f32 + self.pf(14.0), (z.top + z.bottom) as f32 / 2.0);
-            cv.dot(dx, dy, self.pf(4.0), dot);
-            if self.dsc_open {
-                let mut hs = self.dsc_rows();
-                if self.dsc_logged() {
-                    hs.extend([Hit::DscDeaf, Hit::DscLeave]);
-                }
-                for h in hs {
-                    let z = self.zone(h);
-                    let bg = if h == Hit::DscOn || h == Hit::DscLogin {
-                        INDIGO
-                    } else if self.shown == h {
-                        INDIGO
-                    } else if self.hover == h {
-                        HOVER
-                    } else {
-                        TAB
-                    };
-                    cv.round(z.left as f32, z.top as f32, z.right as f32, z.bottom as f32, self.pf(10.0), bg);
-                }
-                if self.dsc_logged() {
-                    let y0 = self.dsc_row_top(Hit::DscJoin) + 36;
-                    for (k, m) in self.dsc_members().iter().enumerate() {
-                        let cy = self.pf((y0 + k as i32 * DSC_MEMBER + DSC_MEMBER / 2) as f32);
-                        let cx = self.pf(26.0);
-                        let c = if m["speaking"] == true { GREEN } else { HOVER };
-                        cv.dot(cx, cy, self.pf(3.5), c);
-                    }
-                }
-            }
+            cv.dot(dx, dy, self.pf(4.0), if self.dsc_open() { GREEN } else { DIM3 });
         }
 
         // Resultados en una tarjeta.
@@ -1397,63 +1263,12 @@ impl App {
 
         if self.dsc_avail {
             let z = self.zone(Hit::DscRow);
-            let label = if !self.dsc_on {
-                "Discord · desactivado".to_string()
-            } else if self.dsc.is_null() {
-                "Discord · cargando…".to_string()
-            } else if !self.dsc_logged() {
-                "Discord · sin sesión".to_string()
-            } else if let Some(ch) = self.dsc["channel"]["name"].as_str() {
-                let talking: Vec<&str> = self.dsc_members().iter()
-                    .filter(|m| m["speaking"] == true)
-                    .filter_map(|m| m["name"].as_str())
-                    .collect();
-                if talking.is_empty() {
-                    format!("{ch} · {}", self.dsc["members"].as_array().map_or(0, Vec::len))
-                } else {
-                    format!("{ch} · habla {}", talking.join(", "))
-                }
-            } else {
-                "Discord · sin canal".to_string()
-            };
-            let in_call = self.dsc_logged() && !self.dsc["channel"].is_null();
+            let open = self.dsc_open();
+            let label = if open { "Discord · abierto (clic cierra)" } else { "Discord · abrir ventana" };
             let tz = RECT { left: z.left + self.px(26), top: z.top, right: z.right - self.px(26), bottom: z.bottom };
-            cv.text(self.f.small, &label, tz, if in_call { INK } else { DIM }, DT_LEFT);
+            cv.text(self.f.small, label, tz, if open { INK } else { DIM }, DT_LEFT);
             let cz = RECT { left: z.right - self.px(26), ..z };
-            cv.text(self.f.icon, if self.dsc_open { "\u{E70E}" } else { "\u{E70D}" }, cz, DIM, DT_CENTER);
-            if self.dsc_open {
-                for h in self.dsc_rows() {
-                    let z = self.zone(h);
-                    match h {
-                        Hit::DscOn => cv.text(self.f.small, "Activar Discord en la card", z, INK, DT_CENTER),
-                        Hit::DscLogin => cv.text(self.f.small, "Iniciar sesión en Discord", z, INK, DT_CENTER),
-                        Hit::DscOff => cv.text(self.f.small, "Quitar Discord de la card", z, DIM, DT_CENTER),
-                        Hit::DscJoin => {
-                            let v = self.dsc["channel"]["name"].as_str().unwrap_or("unirse…");
-                            self.kv(&cv, z, "Canal", v);
-                        }
-                        _ => {}
-                    }
-                }
-                if self.dsc_logged() {
-                    let on = |k: &str| self.dsc[k] == true;
-                    cv.text(self.f.icon, "\u{E720}", self.zone(Hit::DscMute), if on("mute") { RED } else { INK }, DT_CENTER);
-                    cv.text(self.f.icon, "\u{E7F6}", self.zone(Hit::DscDeaf), if on("deaf") { RED } else { INK }, DT_CENTER);
-                    cv.text(self.f.icon, "\u{E778}", self.zone(Hit::DscLeave), if in_call { RED } else { DIM3 }, DT_CENTER);
-                    let y0 = self.dsc_row_top(Hit::DscJoin) + 36;
-                    for (k, m) in self.dsc_members().iter().enumerate() {
-                        let y = y0 + k as i32 * DSC_MEMBER;
-                        let name = m["name"].as_str().unwrap_or("?");
-                        cv.text(self.f.small, name, self.r(36, y, W - 52, y + DSC_MEMBER), if m["speaking"] == true { INK } else { DIM }, DT_LEFT);
-                        let flags = match (m["mute"] == true, m["deaf"] == true) {
-                            (_, true) => "\u{E7F6}",
-                            (true, _) => "\u{E720}",
-                            _ => "",
-                        };
-                        cv.text(self.f.icon, flags, self.r(W - 50, y, W - 22, y + DSC_MEMBER), RED, DT_CENTER);
-                    }
-                }
-            }
+            cv.text(self.f.icon, if open { "\u{E711}" } else { "\u{E8A7}" }, cz, DIM, DT_CENTER);
         }
 
         for vis in 0..n {
@@ -1857,14 +1672,11 @@ fn main() {
             br_guild: None,
             br_channel: None,
             dsc_avail: false,
-            dsc_on: false,
-            dsc_open: false,
-            dsc: Value::Null,
+            dsc_win: None,
         });
         APP = Box::into_raw(a);
         app().br = bridge::Bridge::start(hwnd as isize); // modulo opcional
         app().dsc_avail = std::env::current_exe().map(|e| e.with_file_name("discord.module").exists()).unwrap_or(false);
-        app().dsc_on = app().eng.discord_on();
         app().render(); // una ventana en capas no se ve hasta el primer UpdateLayeredWindow
         ShowWindow(hwnd, SW_SHOWNOACTIVATE);
         // Atajos globales (andan dentro de juegos). Si otra app ya tiene alguno, se ignora.
