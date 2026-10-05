@@ -5,9 +5,11 @@
 //   ytm-bridge devices          lista entradas y salidas de audio
 //   ytm-bridge test [entrada]   captura 3 s y muestra el nivel
 //   ytm-bridge loop             tono en "CABLE Input" + captura de "CABLE Output" (no suena afuera)
+//   ytm-bridge serve            modo hijo de la card (líneas JSON por stdin/stdout, ver serve.rs)
 //   ytm-bridge                  bot: usa %LOCALAPPDATA%\ytm-float\bridge.json
 //                               {"token": "...", "guild": 123, "channel": 456, "device": "CABLE Output"}
 mod capture;
+mod serve;
 
 use base64::Engine as _;
 use serde::Deserialize;
@@ -120,6 +122,10 @@ async fn main() {
             Ok(())
         }
         Some("test") => level(args.get(1).map(String::as_str).unwrap_or("CABLE Output"), 3),
+        Some("serve") => {
+            serve::serve().await;
+            Ok(())
+        }
         Some("loop") => capture::tone("CABLE Input", 440.0).and_then(|_tone| level("CABLE Output", 3)),
         _ => match std::fs::read_to_string(config_path()) {
             Ok(s) => match serde_json::from_str::<Config>(&s) {

@@ -2,6 +2,7 @@
 // Widget flotante de estetica oscura: ventana en capas (alfa por pixel, esquinas
 // suavizadas), formas dibujadas a mano sobre un DIB y texto con GDI. Sin frameworks.
 mod brave;
+mod bridge;
 mod cdp;
 mod engine;
 
@@ -32,6 +33,8 @@ const Y_VOL: i32 = 114;
 const Y_SRCH: i32 = 140;
 const Y_TABS: i32 = 182;
 const H_BASE: i32 = 230;
+const Y_BR: i32 = 226; // seccion del puente a Discord (solo con ytm-bridge.exe instalado)
+const BR_ROW: i32 = 36;
 const ROW: i32 = 40;
 const MAX_ROWS: usize = 8;
 
@@ -106,6 +109,12 @@ enum Hit {
     Lists,
     Again,
     Quick,
+    BrRow,
+    BrToken,
+    BrDevice,
+    BrGuild,
+    BrChannel,
+    BrGo,
     Row(usize),
     Radio(usize),
 }
@@ -115,6 +124,18 @@ struct Item {
     list: Option<String>,
     title: String,
     sub: String,
+    pick: Option<String>, // valor elegido en los selectores del puente
+}
+
+struct BrGuild {
+    id: String,
+    name: String,
+    channels: Vec<(String, String)>,
+}
+
+/// "CABLE Output (VB-Audio Virtual Cable)" → "CABLE Output".
+fn short_dev(d: &str) -> &str {
+    d.split(" (").next().unwrap_or(d)
 }
 
 // ---- Lienzo: DIB de 32 bits con formas antialias hechas a mano ----
@@ -299,6 +320,17 @@ struct App {
     hover: Hit,
     tracking: bool,
     seq: u32,
+    // puente a Discord (None si ytm-bridge.exe no esta)
+    br: Option<bridge::Bridge>,
+    br_open: bool,
+    br_state: String,
+    br_has_token: bool,
+    br_level: f32,
+    br_devices: Vec<String>,
+    br_guilds: Vec<BrGuild>,
+    br_device: String,
+    br_guild: Option<String>,
+    br_channel: Option<String>,
 }
 
 static mut APP: *mut App = null_mut();
@@ -330,7 +362,8 @@ impl App {
             return self.px(H_MINI);
         }
         let n = self.rows_visible() as i32;
-        self.px(if n > 0 { H_BASE + n * ROW + 8 + 12 } else { H_BASE })
+        let b = self.base();
+        self.px(if n > 0 { b + n * ROW + 8 + 12 } else { b })
     }
     /// Colapsada, la tarjeta mide lo que el nombre de la cancion y el artista.
     fn width(&self) -> i32 {
@@ -376,6 +409,12 @@ impl App {
             Hit::Lists => self.tab(0),
             Hit::Again => self.tab(1),
             Hit::Quick => self.tab(2),
+            Hit::BrRow => self.r(12, Y_BR, W - 12, Y_BR + 32),
+            Hit::BrToken | Hit::BrDevice | Hit::BrGuild | Hit::BrChannel | Hit::BrGo => {
+                let k = self.br_rows().iter().position(|&x| x == h).unwrap_or(0) as i32;
+                let t = Y_BR + 36 + k * BR_ROW;
+                self.r(12, t, W - 12, t + 30)
+            }
             _ => RECT { left: 0, top: 0, right: 0, bottom: 0 },
         }
     }
@@ -389,7 +428,32 @@ impl App {
         self.r(c - 18, Y_CTRL + 2, c + 18, Y_CTRL + 38)
     }
     fn row_y(&self, vis: usize) -> i32 {
-        H_BASE + 4 + vis as i32 * ROW
+        self.base() + 4 + vis as i32 * ROW
+    }
+    /// Donde empiezan los resultados: debajo de las pestañas o de la seccion del puente.
+    fn base(&self) -> i32 {
+        if self.br.is_none() {
+            return H_BASE;
+        }
+        Y_BR + 32 + 8 + if self.br_open { self.br_rows().len() as i32 * BR_ROW } else { 0 }
+    }
+    fn br_rows(&self) -> Vec<Hit> {
+        if self.br_has_token {
+            vec![Hit::BrDevice, Hit::BrGuild, Hit::BrChannel, Hit::BrGo]
+        } else {
+            vec![Hit::BrToken]
+        }
+    }
+    fn br_busy(&self) -> bool {
+        matches!(self.br_state.as_str(), "transmitiendo" | "entrando")
+    }
+    fn br_guild_ref(&self) -> Option<&BrGuild> {
+        let g = self.br_guild.as_deref()?;
+        self.br_guilds.iter().find(|x| x.id == g)
+    }
+    fn br_channel_name(&self) -> Option<&str> {
+        let c = self.br_channel.as_deref()?;
+        self.br_guild_ref()?.channels.iter().find(|x| x.0 == c).map(|x| x.1.as_str())
     }
     fn row_rect(&self, vis: usize) -> RECT {
         let y = self.row_y(vis);
@@ -412,6 +476,12 @@ impl App {
         }
         if self.dur > 0.0 {
             hs.push(Hit::Bar);
+        }
+        if self.br.is_some() {
+            hs.push(Hit::BrRow);
+            if self.br_open {
+                hs.extend(self.br_rows());
+            }
         }
         if let Some(h) = hs.into_iter().find(|&h| inside(self.zone(h))) {
             return h;
@@ -499,6 +569,119 @@ impl App {
         self.hover = Hit::None;
     }
 
+    /// Selectores del puente: reusan la lista de resultados.
+    fn br_pick(&mut self, t: Hit) {
+        if self.shown == t {
+            self.clear_search();
+            return;
+        }
+        let it = |title: &str, sub: String, pick: &str| Item { id: None, list: None, title: title.into(), sub, pick: Some(pick.into()) };
+        let items: Vec<Item> = match t {
+            Hit::BrDevice => self.br_devices.iter().map(|d| it(short_dev(d), String::new(), d)).collect(),
+            Hit::BrGuild => self.br_guilds.iter().map(|g| it(&g.name, format!("{} canales de voz", g.channels.len()), &g.id)).collect(),
+            _ => self.br_guild_ref().map(|g| g.channels.iter().map(|(id, n)| it(n, String::new(), id)).collect()).unwrap_or_default(),
+        };
+        if items.is_empty() {
+            self.flash(match t {
+                Hit::BrDevice => "No hay entradas de audio",
+                Hit::BrGuild => "El bot no está en ningún servidor (o sigue conectando)",
+                _ if self.br_guild.is_none() => "Elegí un servidor primero",
+                _ => "Ese servidor no tiene canales de voz",
+            });
+            return;
+        }
+        self.clear_search();
+        self.shown = t;
+        self.set_items(items);
+    }
+
+    fn br_go(&mut self) {
+        let msg = if self.br_busy() {
+            json!({ "cmd": "leave" })
+        } else {
+            let (Some(g), Some(c)) = (self.br_guild.clone(), self.br_channel.clone()) else {
+                self.flash("Elegí servidor y canal");
+                return;
+            };
+            json!({ "cmd": "join", "guild": g, "channel": c, "device": self.br_device })
+        };
+        if let Some(b) = self.br.as_mut() {
+            b.send(msg);
+        }
+    }
+
+    /// El token se pega desde el portapapeles y nunca se muestra.
+    fn br_paste_token(&mut self) {
+        let t = unsafe { clipboard() }.trim().to_string();
+        if t.split('.').count() != 3 {
+            self.flash("Copiá el token del bot y tocá de nuevo");
+            return;
+        }
+        if let Some(b) = self.br.as_mut() {
+            b.send(json!({ "cmd": "token", "token": t }));
+        }
+        self.br_has_token = true;
+        self.flash("Token cargado");
+    }
+
+    fn on_bridge(&mut self, v: Value) {
+        let strs = |x: &Value| x.as_str().map(String::from);
+        match v["ev"].as_str() {
+            Some("devices") => {
+                self.br_devices = v["list"].as_array().map(|a| a.iter().filter_map(strs).collect()).unwrap_or_default();
+                // el nombre guardado puede ser parcial ("CABLE Output"): se completa con el real
+                if let Some(d) = self.br_devices.iter().find(|d| d.starts_with(&self.br_device)) {
+                    self.br_device = d.clone();
+                }
+            }
+            Some("config") => {
+                self.br_has_token = v["token"].as_bool().unwrap_or(false);
+                if let Some(d) = v["device"].as_str() {
+                    self.br_device = self.br_devices.iter().find(|x| x.starts_with(d)).cloned().unwrap_or_else(|| d.into());
+                }
+                self.br_guild = strs(&v["guild"]);
+                self.br_channel = strs(&v["channel"]);
+            }
+            Some("guilds") => {
+                self.br_guilds = v["list"]
+                    .as_array()
+                    .map(|a| {
+                        a.iter()
+                            .map(|g| BrGuild {
+                                id: strs(&g["id"]).unwrap_or_default(),
+                                name: strs(&g["name"]).unwrap_or_default(),
+                                channels: g["channels"]
+                                    .as_array()
+                                    .map(|c| c.iter().map(|c| (strs(&c["id"]).unwrap_or_default(), strs(&c["name"]).unwrap_or_default())).collect())
+                                    .unwrap_or_default(),
+                            })
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                // con un solo servidor, se elige solo
+                if self.br_guild.is_none() && self.br_guilds.len() == 1 {
+                    self.br_guild = Some(self.br_guilds[0].id.clone());
+                }
+            }
+            Some("state") => {
+                self.br_state = strs(&v["s"]).unwrap_or_default();
+                if self.br_state == "sin_token" {
+                    self.br_has_token = false;
+                }
+                if self.br_state == "error" {
+                    let m = format!("Puente: {}", v["msg"].as_str().unwrap_or("error"));
+                    self.flash(&m);
+                }
+                if self.br_state != "transmitiendo" {
+                    self.br_level = 0.0;
+                }
+            }
+            Some("level") => self.br_level = v["v"].as_f64().unwrap_or(0.0) as f32,
+            _ => {}
+        }
+        self.invalidate();
+    }
+
     fn query_changed(&mut self) {
         self.caret_on = true;
         self.shown = Hit::None;
@@ -508,6 +691,20 @@ impl App {
 
     fn play(&mut self, i: usize, radio: bool) {
         let Some(it) = self.items.get(i) else { return };
+        if let (Some(v), t @ (Hit::BrDevice | Hit::BrGuild | Hit::BrChannel)) = (it.pick.clone(), self.shown) {
+            match t {
+                Hit::BrDevice => self.br_device = v,
+                Hit::BrGuild => {
+                    if self.br_guild.as_deref() != Some(v.as_str()) {
+                        self.br_channel = None;
+                    }
+                    self.br_guild = Some(v);
+                }
+                _ => self.br_channel = Some(v),
+            }
+            self.clear_search();
+            return;
+        }
         let arg = match (&it.id, &it.list) {
             (Some(v), _) => json!({ "v": v, "radio": radio }),
             (_, Some(l)) => json!({ "list": l }),
@@ -580,6 +777,16 @@ impl App {
             Hit::Field => unsafe {
                 SetForegroundWindow(self.hwnd);
             },
+            Hit::BrRow => {
+                self.br_open = !self.br_open;
+                if !self.br_open && matches!(self.shown, Hit::BrDevice | Hit::BrGuild | Hit::BrChannel) {
+                    self.clear_search();
+                }
+                self.invalidate();
+            }
+            Hit::BrToken => self.br_paste_token(),
+            Hit::BrDevice | Hit::BrGuild | Hit::BrChannel => self.br_pick(self.hit(x, y)),
+            Hit::BrGo => self.br_go(),
             Hit::Row(i) => self.play(i, false),
             Hit::Radio(i) => self.play(i, true),
             Hit::None => {}
@@ -643,6 +850,7 @@ impl App {
                                     list: x["list"].as_str().map(String::from),
                                     title: x["title"].as_str().unwrap_or_default().to_string(),
                                     sub: x["sub"].as_str().unwrap_or_default().to_string(),
+                                    pick: None,
                                 })
                                 .collect()
                         })
@@ -830,10 +1038,49 @@ impl App {
             cv.round(z.left as f32, z.top as f32, z.right as f32, z.bottom as f32, self.pf(12.0), bg);
         }
 
+        // Seccion del puente: fila de estado (colapsable) y, abierta, selectores.
+        if self.br.is_some() {
+            let z = self.zone(Hit::BrRow);
+            cv.round(z.left as f32, z.top as f32, z.right as f32, z.bottom as f32, self.pf(12.0),
+                if self.hover == Hit::BrRow { HOVER } else { CARD });
+            let dot = match self.br_state.as_str() {
+                "transmitiendo" => GREEN,
+                "conectando" | "entrando" => CYAN,
+                "error" => RED,
+                "listo" => DIM,
+                _ => DIM3,
+            };
+            let (dx, dy) = (z.left as f32 + self.pf(14.0), (z.top + z.bottom) as f32 / 2.0 - self.pf(1.0));
+            cv.round(dx - self.pf(4.0), dy - self.pf(4.0), dx + self.pf(4.0), dy + self.pf(4.0), self.pf(4.0), dot);
+            if self.br_state == "transmitiendo" {
+                let (l, r, y) = (z.left as f32 + self.pf(26.0), z.right as f32 - self.pf(28.0), z.bottom as f32 - self.pf(5.0));
+                cv.round(l, y - self.pf(1.0), r, y + self.pf(1.0), self.pf(1.0), HOVER);
+                let x = l + (r - l) * self.br_level.clamp(0.0, 1.0);
+                if x - l > 1.0 {
+                    cv.round(l, y - self.pf(1.0), x, y + self.pf(1.0), self.pf(1.0), GREEN);
+                }
+            }
+            if self.br_open {
+                for h in self.br_rows() {
+                    let z = self.zone(h);
+                    let bg = if h == Hit::BrGo {
+                        if self.br_busy() { HOVER } else { INDIGO }
+                    } else if self.shown == h {
+                        INDIGO
+                    } else if self.hover == h {
+                        HOVER
+                    } else {
+                        TAB
+                    };
+                    cv.round(z.left as f32, z.top as f32, z.right as f32, z.bottom as f32, self.pf(10.0), bg);
+                }
+            }
+        }
+
         // Resultados en una tarjeta.
         let n = self.rows_visible();
         if n > 0 {
-            let top = self.pf(H_BASE as f32);
+            let top = self.pf(self.base() as f32);
             let bottom = self.pf((self.row_y(n) + 4) as f32);
             cv.round(self.pf(12.0), top, wf - self.pf(12.0), bottom, self.pf(13.0), CARD);
             for vis in 0..n {
@@ -928,6 +1175,42 @@ impl App {
             z.left += self.px(4);
             z.right -= self.px(4);
             cv.text_wrap(self.f.small, label, z, if self.shown == t || self.hover == t { INK } else { DIM });
+        }
+
+        if self.br.is_some() {
+            let z = self.zone(Hit::BrRow);
+            let chan = self.br_channel_name().unwrap_or("canal");
+            let label = match self.br_state.as_str() {
+                "transmitiendo" => format!("Discord · {chan}"),
+                "entrando" => format!("Entrando a {chan}…"),
+                "conectando" => "Puente Discord · conectando…".into(),
+                "listo" => "Puente Discord · listo".into(),
+                "sin_token" => "Puente Discord · falta token".into(),
+                "error" => "Puente Discord · error".into(),
+                _ => "Puente Discord".into(),
+            };
+            let tz = RECT { left: z.left + self.px(26), top: z.top, right: z.right - self.px(26), bottom: z.bottom - self.px(2) };
+            cv.text(self.f.small, &label, tz, if self.br_state == "transmitiendo" { INK } else { DIM }, DT_LEFT);
+            let cz = RECT { left: z.right - self.px(26), ..z };
+            cv.text(self.f.icon, if self.br_open { "\u{E70E}" } else { "\u{E70D}" }, cz, DIM, DT_CENTER);
+            if self.br_open {
+                for h in self.br_rows() {
+                    let z = self.zone(h);
+                    let (label, value) = match h {
+                        Hit::BrToken => ("", "Pegar token del bot (copialo y tocá acá)".to_string()),
+                        Hit::BrDevice => ("Entrada", short_dev(&self.br_device).to_string()),
+                        Hit::BrGuild => ("Servidor", self.br_guild_ref().map(|g| g.name.clone()).unwrap_or_else(|| "elegir…".into())),
+                        Hit::BrChannel => ("Canal", self.br_channel_name().map(String::from).unwrap_or_else(|| "elegir…".into())),
+                        _ => ("", if self.br_busy() { "Salir del canal".into() } else { "Conectar".into() }),
+                    };
+                    if label.is_empty() {
+                        cv.text(self.f.small, &value, z, INK, DT_CENTER);
+                    } else {
+                        cv.text(self.f.small, label, RECT { left: z.left + self.px(12), right: z.left + self.px(70), ..z }, DIM, DT_LEFT);
+                        cv.text(self.f.small, &value, RECT { left: z.left + self.px(72), right: z.right - self.px(10), ..z }, INK, DT_LEFT);
+                    }
+                }
+            }
         }
 
         for vis in 0..n {
@@ -1150,7 +1433,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
             let d = ((wp >> 16) & 0xffff) as i16;
             let mut p = POINT { x: mx, y: my };
             ScreenToClient(hwnd, &mut p);
-            if !a.mini && n > 0 && p.y >= a.px(H_BASE) {
+            if !a.mini && n > 0 && p.y >= a.px(a.base()) {
                 if n > MAX_ROWS {
                     a.scroll = if d > 0 { a.scroll.saturating_sub(2) } else { (a.scroll + 2).min(n - MAX_ROWS) };
                     a.invalidate();
@@ -1208,6 +1491,11 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
             }
             0
         }
+        bridge::WM_BRIDGE => {
+            let v = Box::from_raw(lp as *mut Value);
+            a.on_bridge(*v);
+            0
+        }
         WM_ENGINE => {
             let ev = Box::from_raw(lp as *mut Ev);
             a.on_engine(*ev);
@@ -1218,6 +1506,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
             0
         }
         WM_DESTROY => {
+            a.br = None; // cierra stdin: el puente sale del canal y termina
             for &(id, _, _) in HOTKEYS {
                 UnregisterHotKey(hwnd, id);
             }
@@ -1307,8 +1596,19 @@ fn main() {
             hover: Hit::None,
             tracking: false,
             seq: 0,
+            br: None,
+            br_open: false,
+            br_state: String::new(),
+            br_has_token: false,
+            br_level: 0.0,
+            br_devices: Vec::new(),
+            br_guilds: Vec::new(),
+            br_device: "CABLE Output".into(),
+            br_guild: None,
+            br_channel: None,
         });
         APP = Box::into_raw(a);
+        app().br = bridge::Bridge::start(hwnd as isize); // modulo opcional
         app().render(); // una ventana en capas no se ve hasta el primer UpdateLayeredWindow
         ShowWindow(hwnd, SW_SHOWNOACTIVATE);
         // Atajos globales (andan dentro de juegos). Si otra app ya tiene alguno, se ignora.
