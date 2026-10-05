@@ -66,6 +66,7 @@ pub fn find_brave() -> Option<PathBuf> {
 pub struct Proc {
     job: HANDLE,
     process: HANDLE,
+    pub pid: u32,
 }
 unsafe impl Send for Proc {}
 
@@ -129,8 +130,7 @@ fn spawn(exe: &Path, args: &[String]) -> io::Result<Proc> {
         AssignProcessToJobObject(job, pi.hProcess);
         ResumeThread(pi.hThread);
         CloseHandle(pi.hThread);
-        let _ = std::fs::write(data_dir().join("brave.pid"), pi.dwProcessId.to_string());
-        Ok(Proc { job, process: pi.hProcess })
+        Ok(Proc { job, process: pi.hProcess, pid: pi.dwProcessId })
     }
 }
 
@@ -196,6 +196,7 @@ BackForwardCache,SpareRendererForSitePerProcess,AudioServiceOutOfProcess,PaintHo
     .map(|s| s.to_string())
     .collect();
     let p = spawn(exe, &args)?;
+    let _ = std::fs::write(data_dir().join("brave.pid"), p.pid.to_string());
     for _ in 0..150 {
         sleep(Duration::from_millis(100));
         if let Some(port) = std::fs::read_to_string(&port_file).ok().and_then(|s| s.lines().next()?.parse().ok()) {
@@ -246,7 +247,10 @@ pub fn launch_discord(exe: &Path, x: i32, y: i32, w: i32, h: i32) -> io::Result<
         format!("--window-size={w},{h}"),
         "--app=https://discord.com/channels/@me".into(),
     ];
-    spawn(exe, &args)
+    let p = spawn(exe, &args)?;
+    // El mezclador del puente lo excluye: mandar Discord al cable haria eco.
+    let _ = std::fs::write(data_dir().join("discord.pid"), p.pid.to_string());
+    Ok(p)
 }
 
 pub fn http_get(port: u16, path: &str) -> io::Result<String> {

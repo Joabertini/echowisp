@@ -2,6 +2,7 @@
 //   card → puente: {"cmd":"token","token":"…"} · {"cmd":"join","guild":"…","channel":"…","device":"…"} · {"cmd":"leave"}
 //   puente → card: {"ev":"devices","list":[…]} · {"ev":"config",…} · {"ev":"guilds","list":[…]}
 //                  {"ev":"state","s":"…","msg":"…"} · {"ev":"level","v":0.0}
+//   mezclador (mixer.rs): {"cmd":"apps"|"route"|"vol"} → {"ev":"apps",…} · {"ev":"mix_error","msg":"…"}
 // Si la card se cierra (stdin EOF) el puente sale del canal y termina.
 use crate::{bot_id, capture, config_path};
 use serde_json::{json, Value};
@@ -19,7 +20,7 @@ use tokio::io::{AsyncBufReadExt, BufReader};
 use twilight_gateway::{Event, EventTypeFlags, Intents, Shard, ShardId, ShardState, StreamExt as _};
 use twilight_model::{channel::ChannelType, gateway::payload::incoming::GuildCreate, id::Id};
 
-fn emit(v: Value) {
+pub fn emit(v: Value) {
     println!("{v}"); // stdout es LineWriter: cada linea sale entera
 }
 
@@ -108,6 +109,7 @@ pub async fn serve() {
         // stdin cerrado: la card ya no esta
     });
 
+    let (mix, mix_thread) = crate::mixer::start();
     let guilds: Guilds = Default::default();
     let level = Arc::new(AtomicU32::new(0));
     let mut songbird: Option<Arc<Songbird>> = None;
@@ -185,6 +187,9 @@ pub async fn serve() {
             c = cmd_rx.recv() => {
                 let Some(c) = c else { break };
                 match c["cmd"].as_str() {
+                    Some("apps" | "route" | "vol") => {
+                        let _ = mix.send(c);
+                    }
                     Some("token") => {
                         let Some(t) = c["token"].as_str().map(|s| s.trim().to_string()) else { continue };
                         cfg["token"] = json!(t);
@@ -246,7 +251,9 @@ pub async fn serve() {
         }
     }
 
-    // La card se fue: salir del canal antes de terminar.
+    // La card se fue: devolver las salidas de las apps y salir del canal antes de terminar.
+    drop(mix);
+    let _ = mix_thread.join();
     if let (Some(t), Some(sb)) = (tx.take(), songbird.as_ref()) {
         let _ = sb.remove(t.guild).await;
         let _ = t.stop.send(());

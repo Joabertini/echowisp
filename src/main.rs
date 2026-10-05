@@ -35,6 +35,8 @@ const Y_TABS: i32 = 182;
 const H_BASE: i32 = 230;
 const Y_BR: i32 = 226; // seccion del puente a Discord (solo con ytm-bridge.exe instalado)
 const BR_ROW: i32 = 36;
+const MIX_ROW: i32 = 28; // app del mezclador
+const MIX_VOL: i32 = 24; // barra de volumen desplegada bajo la app
 const ROW: i32 = 40;
 const MAX_ROWS: usize = 8;
 
@@ -61,6 +63,7 @@ const T_SEARCH: usize = 1;
 const T_TICK: usize = 2;
 const T_MSG: usize = 3;
 const T_CARET: usize = 4;
+const T_MIX: usize = 5; // refresco de la lista de apps mientras esta abierta
 
 const HK_TOGGLE: i32 = 1;
 const HK_NEXT: i32 = 2;
@@ -114,6 +117,10 @@ enum Hit {
     BrDevice,
     BrChannel,
     BrGo,
+    MixRow,
+    MixApp(usize),
+    MixSw(usize),
+    MixVol(usize),
     DscRow,
     Row(usize),
     Radio(usize),
@@ -125,6 +132,14 @@ struct Item {
     title: String,
     sub: String,
     pick: Option<String>, // valor elegido en los selectores del puente
+}
+
+/// App con sonido del mezclador del puente (ver bridge/src/mixer.rs).
+struct MixApp {
+    pid: u64,
+    name: String,
+    on: bool, // mandada al cable (a Discord)
+    vol: f64, // 0-100
 }
 
 struct BrGuild {
@@ -326,6 +341,11 @@ struct App {
     // puente a Discord (None si ytm-bridge.exe no esta)
     br: Option<bridge::Bridge>,
     br_open: bool,
+    mix_open: bool,
+    mix_apps: Vec<MixApp>,
+    mix_cable: bool,
+    mix_sel: Option<u64>, // app con la barra de volumen desplegada
+    mix_drag: Option<usize>,
     br_state: String,
     br_err: String,
     br_has_token: bool,
@@ -422,6 +442,22 @@ impl App {
                 let t = Y_BR + 36 + k * BR_ROW;
                 self.r(12, t, W - 12, t + 30)
             }
+            Hit::MixRow => {
+                let t = self.mix_top();
+                self.r(12, t, W - 12, t + 30)
+            }
+            Hit::MixApp(i) => {
+                let t = self.mix_app_top(i);
+                self.r(12, t, W - 64, t + MIX_ROW)
+            }
+            Hit::MixSw(i) => {
+                let t = self.mix_app_top(i);
+                self.r(W - 56, t + 5, W - 18, t + MIX_ROW - 5)
+            }
+            Hit::MixVol(i) => {
+                let t = self.mix_app_top(i) + MIX_ROW;
+                self.r(24, t + 4, W - 64, t + MIX_VOL - 4)
+            }
             Hit::DscRow => {
                 let t = self.dsc_top();
                 self.r(12, t, W - 12, t + 32)
@@ -452,7 +488,38 @@ impl App {
         if self.br.is_none() {
             return 0;
         }
-        32 + 8 + if self.br_open { self.br_rows().len() as i32 * BR_ROW } else { 0 }
+        32 + 8 + if self.br_open { self.br_rows().len() as i32 * BR_ROW + self.mix_h() } else { 0 }
+    }
+    fn mix_top(&self) -> i32 {
+        Y_BR + 36 + self.br_rows().len() as i32 * BR_ROW
+    }
+    fn mix_row_h(&self, a: &MixApp) -> i32 {
+        MIX_ROW + if self.mix_sel == Some(a.pid) { MIX_VOL } else { 0 }
+    }
+    fn mix_app_top(&self, i: usize) -> i32 {
+        self.mix_top() + BR_ROW + self.mix_apps[..i].iter().map(|a| self.mix_row_h(a)).sum::<i32>()
+    }
+    /// Fila "Apps a Discord" y, abierta, una fila por app (o un aviso si no hay apps o cable).
+    fn mix_h(&self) -> i32 {
+        BR_ROW + if !self.mix_open {
+            0
+        } else if self.mix_apps.is_empty() || !self.mix_cable {
+            MIX_ROW + 6
+        } else {
+            self.mix_apps.iter().map(|a| self.mix_row_h(a)).sum::<i32>() + 6
+        }
+    }
+    fn mix_hits(&self) -> Vec<Hit> {
+        let mut v = vec![Hit::MixRow];
+        if self.mix_open && self.mix_cable {
+            for (i, a) in self.mix_apps.iter().enumerate() {
+                v.extend([Hit::MixSw(i), Hit::MixApp(i)]);
+                if self.mix_sel == Some(a.pid) {
+                    v.push(Hit::MixVol(i));
+                }
+            }
+        }
+        v
     }
     fn dsc_top(&self) -> i32 {
         Y_BR + self.br_h()
@@ -505,6 +572,7 @@ impl App {
             hs.push(Hit::BrRow);
             if self.br_open {
                 hs.extend(self.br_rows());
+                hs.extend(self.mix_hits());
             }
         }
         if self.dsc_avail {
@@ -679,6 +747,51 @@ impl App {
         self.flash("Token cargado");
     }
 
+    fn mix_send(&mut self, v: Value) {
+        if let Some(b) = self.br.as_mut() {
+            b.send(v);
+        }
+    }
+    fn mix_click(&mut self, h: Hit, x: i32) {
+        match h {
+            Hit::MixRow => {
+                self.mix_open = !self.mix_open;
+                if self.mix_open {
+                    self.mix_send(json!({ "cmd": "apps" }));
+                    unsafe { SetTimer(self.hwnd, T_MIX, 2000, None) };
+                } else {
+                    unsafe { KillTimer(self.hwnd, T_MIX) };
+                }
+            }
+            Hit::MixApp(i) => {
+                let pid = self.mix_apps[i].pid;
+                self.mix_sel = if self.mix_sel == Some(pid) { None } else { Some(pid) };
+            }
+            Hit::MixSw(i) => {
+                let a = &mut self.mix_apps[i];
+                a.on = !a.on; // optimista: la lista que vuelve confirma lo que dejo Windows
+                let v = json!({ "cmd": "route", "pid": a.pid, "on": a.on });
+                self.mix_send(v);
+            }
+            Hit::MixVol(i) => {
+                self.mix_drag = Some(i);
+                unsafe { SetCapture(self.hwnd) };
+                self.mix_vol_from_x(i, x);
+            }
+            _ => {}
+        }
+        self.invalidate();
+    }
+    fn mix_vol_from_x(&mut self, i: usize, x: i32) {
+        let b = self.zone(Hit::MixVol(i));
+        let v = ((x - b.left) as f64 / (b.right - b.left) as f64).clamp(0.0, 1.0);
+        let Some(a) = self.mix_apps.get_mut(i) else { return };
+        a.vol = (v * 100.0).round();
+        let msg = json!({ "cmd": "vol", "pid": a.pid, "v": v });
+        self.mix_send(msg);
+        self.invalidate();
+    }
+
     fn on_bridge(&mut self, v: Value) {
         let strs = |x: &Value| x.as_str().map(String::from);
         match v["ev"].as_str() {
@@ -733,6 +846,29 @@ impl App {
                 }
             }
             Some("level") => self.br_level = v["v"].as_f64().unwrap_or(0.0) as f32,
+            Some("apps") if self.mix_drag.is_none() => {
+                self.mix_cable = v["cable"] != false;
+                self.mix_apps = v["list"]
+                    .as_array()
+                    .map(|a| {
+                        a.iter()
+                            .map(|x| MixApp {
+                                pid: x["pid"].as_u64().unwrap_or(0),
+                                name: strs(&x["name"]).unwrap_or_default(),
+                                on: x["on"] == true,
+                                vol: x["vol"].as_f64().unwrap_or(100.0),
+                            })
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                if self.mix_sel.is_some_and(|p| !self.mix_apps.iter().any(|a| a.pid == p)) {
+                    self.mix_sel = None;
+                }
+            }
+            Some("mix_error") => {
+                let m = format!("Mezclador: {}", v["msg"].as_str().unwrap_or("error"));
+                self.flash(&m);
+            }
             _ => {}
         }
         self.invalidate();
@@ -840,6 +976,7 @@ impl App {
             Hit::BrToken => self.br_paste_token(),
             Hit::BrDevice | Hit::BrChannel => self.br_pick(self.hit(x, y)),
             Hit::BrGo => self.br_go(),
+            h @ (Hit::MixRow | Hit::MixApp(_) | Hit::MixSw(_) | Hit::MixVol(_)) => self.mix_click(h, x),
             Hit::DscRow => self.dsc_toggle(),
             Hit::Row(i) => self.play(i, false),
             Hit::Radio(i) => self.play(i, true),
@@ -1115,6 +1252,34 @@ impl App {
                     };
                     cv.round(z.left as f32, z.top as f32, z.right as f32, z.bottom as f32, self.pf(10.0), bg);
                 }
+                // Mezclador: fila + apps con interruptor y, la elegida, su barra de volumen.
+                let z = self.zone(Hit::MixRow);
+                let bg = if self.hover == Hit::MixRow { HOVER } else { TAB };
+                cv.round(z.left as f32, z.top as f32, z.right as f32, z.bottom as f32, self.pf(10.0), bg);
+                if self.mix_open && self.mix_cable {
+                    for (i, a) in self.mix_apps.iter().enumerate() {
+                        if self.hover == Hit::MixApp(i) {
+                            let z = self.zone(Hit::MixApp(i));
+                            cv.round(z.left as f32, z.top as f32, z.right as f32, z.bottom as f32, self.pf(8.0), HOVER);
+                        }
+                        let z = self.zone(Hit::MixSw(i));
+                        let (l, t, r, b) = (z.left as f32, z.top as f32, z.right as f32, z.bottom as f32);
+                        cv.round(l, t, r, b, (b - t) / 2.0, if a.on { GREEN } else { HOVER });
+                        let k = (b - t) / 2.0 - self.pf(2.5);
+                        let cx = if a.on { r - (b - t) / 2.0 } else { l + (b - t) / 2.0 };
+                        cv.dot(cx, (t + b) / 2.0, k, INK);
+                        if self.mix_sel == Some(a.pid) {
+                            let z = self.zone(Hit::MixVol(i));
+                            let (l, r, y) = (z.left as f32, z.right as f32, (z.top + z.bottom) as f32 / 2.0);
+                            cv.round(l, y - self.pf(2.0), r, y + self.pf(2.0), self.pf(2.0), HOVER);
+                            let x = l + (r - l) * (a.vol / 100.0) as f32;
+                            if x - l > 1.0 {
+                                cv.round(l, y - self.pf(2.0), x, y + self.pf(2.0), self.pf(2.0), INDIGO);
+                            }
+                            cv.dot(x, y, self.pf(5.0), INK);
+                        }
+                    }
+                }
             }
         }
 
@@ -1256,6 +1421,36 @@ impl App {
                         cv.text(self.f.small, &value, z, INK, DT_CENTER);
                     } else {
                         self.kv(&cv, z, label, &value);
+                    }
+                }
+                let z = self.zone(Hit::MixRow);
+                let n = self.mix_apps.iter().filter(|a| a.on).count();
+                let label = if n > 0 { format!("Apps a Discord · {n}") } else { "Apps a Discord".to_string() };
+                cv.text(self.f.small, &label, RECT { left: z.left + self.px(12), right: z.right - self.px(26), ..z }, if n > 0 { INK } else { DIM }, DT_LEFT);
+                let cz = RECT { left: z.right - self.px(26), ..z };
+                cv.text(self.f.icon, if self.mix_open { "\u{E70E}" } else { "\u{E70D}" }, cz, DIM, DT_CENTER);
+                if self.mix_open {
+                    let t = self.mix_top() + BR_ROW;
+                    let empty = if !self.mix_cable {
+                        Some("Falta VB-Cable (CABLE Input)")
+                    } else if self.mix_apps.is_empty() {
+                        Some("Ninguna app está sonando")
+                    } else {
+                        None
+                    };
+                    if let Some(m) = empty {
+                        cv.text(self.f.small, m, self.r(12, t, W - 12, t + MIX_ROW), DIM, DT_CENTER);
+                    }
+                    if self.mix_cable {
+                        for (i, a) in self.mix_apps.iter().enumerate() {
+                            let z = self.zone(Hit::MixApp(i));
+                            cv.text(self.f.small, &a.name, RECT { left: z.left + self.px(12), ..z }, if a.on { INK } else { DIM }, DT_LEFT);
+                            if self.mix_sel == Some(a.pid) {
+                                let t = z.bottom;
+                                let v = format!("{}", a.vol as i32);
+                                cv.text(self.f.small, &v, self.r(W - 62, t, W - 20, t + MIX_VOL), DIM, DT_CENTER);
+                            }
+                        }
                     }
                 }
             }
@@ -1446,8 +1641,9 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
             0
         }
         WM_LBUTTONUP => {
-            if a.dragging {
+            if a.dragging || a.mix_drag.is_some() {
                 a.dragging = false;
+                a.mix_drag = None;
                 ReleaseCapture();
                 a.invalidate();
             }
@@ -1457,8 +1653,13 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
             a.vol_from_x(mx);
             0
         }
+        WM_MOUSEMOVE if a.mix_drag.is_some() => {
+            a.mix_vol_from_x(a.mix_drag.unwrap(), mx);
+            0
+        }
         WM_CAPTURECHANGED => {
             a.dragging = false;
+            a.mix_drag = None;
             0
         }
         WM_MOUSEMOVE => {
@@ -1542,6 +1743,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
                     }
                 }
                 T_TICK => a.invalidate(),
+                T_MIX => a.mix_send(json!({ "cmd": "apps" })),
                 T_MSG => {
                     KillTimer(hwnd, T_MSG);
                     a.msg.clear();
@@ -1662,6 +1864,11 @@ fn main() {
             seq: 0,
             br: None,
             br_open: false,
+            mix_open: false,
+            mix_apps: Vec::new(),
+            mix_cable: true,
+            mix_sel: None,
+            mix_drag: None,
             br_state: String::new(),
             br_err: String::new(),
             br_has_token: false,

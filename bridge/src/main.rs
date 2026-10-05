@@ -5,6 +5,7 @@
 // Lo lanza la card (`ytm-bridge serve`) y hablan por lineas JSON: ver serve.rs.
 // Token y ultima seleccion en %LOCALAPPDATA%\ytm-float\bridge.json.
 mod capture;
+mod mixer;
 mod serve;
 
 use base64::Engine as _;
