@@ -200,15 +200,15 @@ BackForwardCache,SpareRendererForSitePerProcess,AudioServiceOutOfProcess,PaintHo
     Err(io::Error::other("Brave no respondió"))
 }
 
-/// Unica vez que se ve Brave: ventana normal para iniciar sesion en Google.
-pub fn launch_login(exe: &Path) -> io::Result<Proc> {
+/// Unica vez que se ve Brave: ventana normal para iniciar sesion (Google o Discord).
+pub fn launch_login(exe: &Path, url: &str) -> io::Result<Proc> {
     let prof = profile_dir();
     std::fs::create_dir_all(&prof)?;
     let args = [
         format!("--user-data-dir={}", prof.display()),
         "--no-first-run".into(),
         "--no-default-browser-check".into(),
-        "--app=https://accounts.google.com/ServiceLogin?service=youtube&continue=https://music.youtube.com/".into(),
+        format!("--app={url}"),
     ];
     spawn(exe, &args)
 }
