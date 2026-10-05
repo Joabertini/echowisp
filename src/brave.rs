@@ -173,8 +173,8 @@ pub fn launch_headless(exe: &Path) -> io::Result<(Proc, u16)> {
         "--in-process-gpu",
         "--js-flags=--lite-mode",
         "--disable-extensions",
-        "--disable-component-update",
-        "--disable-background-networking",
+        // Sin --disable-component-update ni --disable-background-networking: Brave Shields
+        // necesita bajar y actualizar sus listas de filtros (con esos flags no bloqueaba nada).
         "--disable-sync",
         "--disable-default-apps",
         "--disable-features=IsolateOrigins,site-per-process,Translate,MediaRouter,OptimizationHints,\
