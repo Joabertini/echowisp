@@ -1,0 +1,47 @@
+# CONTEXT — ytm-float (al 04-10-2026)
+
+## Objetivo
+Reproductor flotante hiperliviano de YouTube Music (cuenta gratuita, sin Premium), estética oscura
+de tarjetas con acento índigo.
+Funciona con el Brave del usuario cerrado. Prioridad: recursos mínimos y fluidez.
+
+## Arquitectura
+- `src/main.rs` — UI: ventana en capas (`WS_EX_LAYERED`, `UpdateLayeredWindow`), formas antialias
+  hechas a mano sobre un DIB de 32 bits, texto GDI, campo de búsqueda propio (los controles hijos no se
+  ven en ventanas en capas). Instancia única (mutex), `RegisterHotKey`, `WM_MOUSEACTIVATE` → no activa
+  salvo en el buscador.
+- `src/engine.rs` — hilo con la sesión CDP: lanza Brave, inyecta `page.js`, recibe eventos push
+  (`Runtime.addBinding("__ytmEvt")`), traduce respuestas a `Ev` vía `PostMessageW`. Reconecta solo.
+- `src/brave.rs` — busca brave.exe (App Paths / Program Files), lanza headless dentro de un Job object
+  con KILL_ON_JOB_CLOSE, ventana de login única (`--app=accounts.google.com…`), mata huérfanos
+  (solo si `perfil\lockfile` está bloqueado y el pid es brave.exe).
+- `src/cdp.rs` — WebSocket RFC 6455 mínimo, sin dependencias.
+- `src/page.js` — corre en music.youtube.com: API interna (`/youtubei/v1/search|browse`), play por
+  evento `yt-navigate` (sin recargar, ~250 ms; plan B recarga), controles por clic en la barra del
+  reproductor, estado por `navigator.mediaSession` + `repeat-mode` del `ytmusic-player-bar`.
+
+## Decisiones (con motivo)
+- **No reproducir el audio en nativo** (opción C): YouTube corta la descarga sin token PoToken; el
+  clasificador de permisos frenó el intento de evadirlo. Se usa el reproductor oficial en Brave.
+- **Sin extensión**: Brave no permite instalar extensiones fuera de la tienda en silencio; CDP alcanza.
+- **Flags de Brave**: `--headless=new --single-process --disable-gpu --in-process-gpu
+  --js-flags=--lite-mode --blink-settings=imagesEnabled=false --autoplay-policy=no-user-gesture-required`.
+  NO usar `--disable-component-update` ni `--disable-background-networking`: dejan a Shields sin
+  listas (medido: 0 vs 4 bloqueos en 20 s, misma RAM). NO limitar heap (`--max-old-space-size=96`
+  crasheó la pestaña).
+- User agent: headless dice "HeadlessChrome" y YTM lo rechaza → `Network.setUserAgentOverride`.
+- `--single-process`: `addScriptToEvaluateOnNewDocument` no siempre corre y una 2ª conexión CDP no ve
+  contextos → se inyecta `page.js` en cada `executionContextCreated` del frame principal y se usa una
+  sola conexión. Filtrar por `frameId == target id` (los iframes de anuncios también son isDefault).
+- DevTools HTTP rechaza HTTP/1.0 y no cierra la conexión → HTTP/1.1 + Content-Length.
+- `DrawTextW` con string vacío revienta (puntero de Vec vacío) → se saltea.
+
+## Medidas
+- Exe: ~270 KB; ~2 MB privados. Brave: 2 procesos, ~180–245 MB reproduciendo; CPU ~0,2 %.
+
+## Pendiente / ideas
+- Probar teclas multimedia (pueden estar tomadas por otra app).
+- Arranque con Windows (opcional, preguntar).
+- Volumen; reacomodar con DPI por monitor (`WM_DPICHANGED`).
+- Una isla pegada arriba fue descartada: se prefirió flotante arrastrable.
+
