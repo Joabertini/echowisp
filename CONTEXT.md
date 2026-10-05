@@ -35,6 +35,11 @@ Funciona con el Brave del usuario cerrado. Prioridad: recursos mínimos y fluide
   sola conexión. Filtrar por `frameId == target id` (los iframes de anuncios también son isDefault).
 - DevTools HTTP rechaza HTTP/1.0 y no cierra la conexión → HTTP/1.1 + Content-Length.
 - `DrawTextW` con string vacío revienta (puntero de Vec vacío) → se saltea.
+- Estantes de portada (`browse FEmusic_home`): se buscan por título es/en ("Vuelve a escucharlo",
+  "Selecciones rápidas") siguiendo `nextContinuationData`; los rápidos vienen en la 2ª página (medido 05-10).
+- Volumen por `movie_player.setVolume/mute` (sincroniza con la UI de YTM), no `video.volume`.
+- Ancho 240 = cinco controles + margen. Colapsada (doble clic, `WM_NCLBUTTONDBLCLK`) mide lo que el texto;
+  al cambiar de ancho se conserva el centro y `pos.txt` guarda la posición de la tarjeta expandida.
 
 ## Medidas
 - Exe: ~270 KB; ~2 MB privados. Brave: 2 procesos, ~180–245 MB reproduciendo; CPU ~0,2 %.
@@ -42,6 +47,6 @@ Funciona con el Brave del usuario cerrado. Prioridad: recursos mínimos y fluide
 ## Pendiente / ideas
 - Probar teclas multimedia (pueden estar tomadas por otra app).
 - Arranque con Windows (opcional, preguntar).
-- Volumen; reacomodar con DPI por monitor (`WM_DPICHANGED`).
+- Reacomodar con DPI por monitor (`WM_DPICHANGED`).
 - Una isla pegada arriba fue descartada: se prefirió flotante arrastrable.
 

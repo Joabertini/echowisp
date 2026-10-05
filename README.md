@@ -9,7 +9,10 @@ controla un Brave invisible (headless, perfil propio) por CDP. Brave Shields act
 - Primera vez: ícono de usuario (ámbar) → se abre Brave una sola vez → iniciar sesión en Google → cerrar esa ventana.
 - Escribir busca · Enter reproduce · Shift+Enter radio · ↑/↓ elige · Esc limpia · Espacio (buscador vacío) play/pausa · Ctrl+V pega.
 - Clic en la barra: salta a ese punto. Arrastrar desde el título mueve la ventana (recuerda la posición).
-- Botones: aleatorio (mezcla la cola), anterior, play, siguiente, repetir (no → lista → canción), Listas (playlists de la cuenta).
+- Doble clic en canción/artista: colapsa la tarjeta a ese tamaño; otro doble clic la abre.
+- Volumen: barra bajo el progreso (clic o arrastre), ícono = silenciar, rueda sobre la tarjeta ±5.
+- Botones: aleatorio (mezcla la cola), anterior, play, siguiente, repetir (no → lista → canción).
+- Bajo el buscador: Listas (playlists de la cuenta), Escuchar otra vez y Selección rápida (estantes de la portada). Tocar la activa la cierra.
 
 ### Atajos globales (andan dentro de juegos)
 
