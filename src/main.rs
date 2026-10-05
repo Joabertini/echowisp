@@ -338,7 +338,7 @@ impl App {
         let (l1, l2) = self.lines();
         let l2 = if self.msg.is_empty() { l2 } else { self.msg.as_str() };
         let tw = unsafe { measure(self.f.title, l1).max(measure(self.f.small, l2)) };
-        (tw + self.px(36)).clamp(self.px(110), self.px(W))
+        (tw + self.px(56)).clamp(self.px(110), self.px(W))
     }
     fn lines(&self) -> (&str, &str) {
         if !self.ready {
@@ -740,16 +740,6 @@ impl App {
         let line2 = if self.msg.is_empty() { line2 } else { self.msg.as_str() };
         let c2 = if self.msg.is_empty() { DIM } else { PINK };
 
-        if self.mini {
-            GdiFlush();
-            cv.text(self.f.title, line1, RECT { left: self.px(14), top: self.px(6), right: w - self.px(14), bottom: self.px(27) }, INK, DT_CENTER);
-            cv.text(self.f.small, line2, RECT { left: self.px(14), top: self.px(26), right: w - self.px(14), bottom: self.px(43) }, c2, DT_CENTER);
-            GdiFlush();
-            cv.finish(RADIUS * s);
-            self.present(cv, w, h);
-            return;
-        }
-
         // Punto de estado (lo reemplaza el icono de usuario si no hay sesion).
         let dot = if !self.ready {
             CYAN
@@ -762,6 +752,19 @@ impl App {
         } else {
             GREEN
         };
+        if self.mini {
+            // Colapsada conserva el punto de estado (verde sonando, gris en pausa).
+            let (dx, dy) = (self.pf(16.0), self.pf((H_MINI / 2) as f32));
+            cv.round(dx - self.pf(4.0), dy - self.pf(4.0), dx + self.pf(4.0), dy + self.pf(4.0), self.pf(4.0), dot);
+            GdiFlush();
+            cv.text(self.f.title, line1, RECT { left: self.px(28), top: self.px(6), right: w - self.px(28), bottom: self.px(27) }, INK, DT_CENTER);
+            cv.text(self.f.small, line2, RECT { left: self.px(28), top: self.px(26), right: w - self.px(28), bottom: self.px(43) }, c2, DT_CENTER);
+            GdiFlush();
+            cv.finish(RADIUS * s);
+            self.present(cv, w, h);
+            return;
+        }
+
         let login = self.ready && !self.logged;
         if !login {
             let (dx, dy) = (self.pf(22.0), self.pf(18.0));
