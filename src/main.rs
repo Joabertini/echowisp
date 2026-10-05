@@ -67,11 +67,13 @@ const HK_SEARCH: i32 = 5;
 const HK_MEDIA_PLAY: i32 = 6;
 const HK_MEDIA_NEXT: i32 = 7;
 const HK_MEDIA_PREV: i32 = 8;
+const HK_MINI: i32 = 9;
 const HOTKEYS: &[(i32, HOT_KEY_MODIFIERS, VIRTUAL_KEY)] = &[
     (HK_TOGGLE, MOD_CONTROL | MOD_ALT, VK_SPACE),
     (HK_NEXT, MOD_CONTROL | MOD_ALT, VK_RIGHT),
     (HK_PREV, MOD_CONTROL | MOD_ALT, VK_LEFT),
-    (HK_SHOW, MOD_CONTROL | MOD_ALT, 0x4D), // M
+    (HK_SHOW, MOD_CONTROL | MOD_ALT, 0x48), // H (Ctrl+Alt+M lo tiene otra app)
+    (HK_MINI, MOD_CONTROL | MOD_ALT, 0x4E), // N
     (HK_SEARCH, MOD_CONTROL | MOD_ALT, 0x42), // B
     (HK_MEDIA_PLAY, 0, VK_MEDIA_PLAY_PAUSE),
     (HK_MEDIA_NEXT, 0, VK_MEDIA_NEXT_TRACK),
@@ -1061,6 +1063,12 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
                 HK_TOGGLE | HK_MEDIA_PLAY => a.toggle(),
                 HK_NEXT | HK_MEDIA_NEXT => a.cmd("next"),
                 HK_PREV | HK_MEDIA_PREV => a.cmd("prev"),
+                HK_MINI => {
+                    if IsWindowVisible(hwnd) == 0 {
+                        show(hwnd, false);
+                    }
+                    a.toggle_mini();
+                }
                 HK_SHOW => {
                     if IsWindowVisible(hwnd) != 0 {
                         ShowWindow(hwnd, SW_HIDE);
@@ -1305,7 +1313,9 @@ fn main() {
         ShowWindow(hwnd, SW_SHOWNOACTIVATE);
         // Atajos globales (andan dentro de juegos). Si otra app ya tiene alguno, se ignora.
         for &(id, m, vk) in HOTKEYS {
-            RegisterHotKey(hwnd, id, m | MOD_NOREPEAT, vk as u32);
+            if RegisterHotKey(hwnd, id, m | MOD_NOREPEAT, vk as u32) == 0 {
+                engine::log(&format!("atajo {id} (vk {vk:#x}) tomado por otra app"));
+            }
         }
 
         let mut m: MSG = zeroed();

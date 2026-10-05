@@ -24,7 +24,7 @@ pub enum Ev {
     Status(String),
 }
 
-fn log(m: &str) {
+pub fn log(m: &str) {
     use std::io::Write;
     let t = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
     if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(brave::data_dir().join("engine.log")) {
