@@ -1,7 +1,7 @@
 ; Instalador modular de YTM Float. Compilar: ISCC installer\ytm-float.iss (despues de cargo build --release
 ; en la raiz y en bridge\). Por usuario, sin admin. Navegador: cualquier Chromium detectado o Brave Origin
 ; portatil (se baja). Silencioso: /NAVEGADOR=ruta-al-exe o /NAVEGADOR=origin.
-#define AppVer "0.2.0"
+#define AppVer "0.3.0"
 #define BraveVer "1.96.61"
 #define BraveZip "brave-origin-v" + BraveVer + "-win32-x64.zip"
 #define BraveSha "97860f4bfa908bd9f4514f5a4d53ed5dcd4093280dd98cef3c7602796025f734"

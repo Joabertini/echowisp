@@ -16,6 +16,7 @@ pub enum Panel {
     None,
     Apps,
     Config,
+    Report,
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -37,6 +38,13 @@ pub enum PHit {
     AllDevices,
     Browser(usize),
     Hotkey(usize),
+    Report,
+    Note(&'static str),
+    RText,
+    RContact,
+    RAttach,
+    RSend,
+    RStatus,
 }
 
 /// Atajos que se pueden cambiar (los multimedia no).
@@ -206,6 +214,24 @@ impl App {
                         y += P_ROW;
                     }
                 }
+                row(PHit::Report, 12, PW - 12, y + 6, y + 36, &mut v);
+                y += 40;
+            }
+            Panel::Report => {
+                row(PHit::Note("Contanos qué pasó. Le llega directo a quien hace la app."), 16, PW - 16, y, y + 32, &mut v);
+                y += 38;
+                row(PHit::RText, 12, PW - 12, y, y + 104, &mut v);
+                y += 112;
+                row(PHit::RContact, 12, PW - 12, y, y + 30, &mut v);
+                y += 36;
+                row(PHit::RAttach, 12, PW - 12, y, y + P_ROW, &mut v);
+                y += P_ROW + 6;
+                row(PHit::RSend, 12, PW - 12, y, y + 30, &mut v);
+                y += 34;
+                if !self.rep.error.is_empty() {
+                    row(PHit::RStatus, 16, PW - 16, y, y + 32, &mut v);
+                    y += 32;
+                }
             }
             Panel::None => {}
         }
@@ -250,6 +276,10 @@ impl App {
 
     /// Caracter tecleado mientras se edita un color hex. Enter confirma, Esc deja el color de antes.
     pub fn panel_char(&mut self, c: u16) {
+        if self.panel == Panel::Report && self.rep.focus.is_some() {
+            self.rep.type_char(c, || unsafe { clipboard() });
+            return self.panel_render();
+        }
         let Some((which, mut buf, orig)) = self.panel_edit.take() else { return };
         let mut done = false;
         match c {
@@ -456,7 +486,27 @@ impl App {
                             }
                         }
                     }
-                    PHit::Token | PHit::Invite => cv.round(l, t, rr, b, self.pf(10.0), if hov == hit { th().accent } else { th().tab }),
+                    PHit::Token | PHit::Invite | PHit::Report => cv.round(l, t, rr, b, self.pf(10.0), if hov == hit { th().accent } else { th().tab }),
+                    PHit::RText | PHit::RContact => {
+                        let f = if hit == PHit::RText { report::Field::Text } else { report::Field::Contact };
+                        let focus = self.rep.focus == Some(f);
+                        cv.round(l, t, rr, b, self.pf(10.0), if focus { th().accent } else if hov == hit { th().dim3 } else { th().hairline });
+                        cv.round(l + 1.0, t + 1.0, rr - 1.0, b - 1.0, self.pf(9.0), th().tab);
+                    }
+                    PHit::RAttach => {
+                        if hov == hit {
+                            cv.round(l, t, rr, b, self.pf(8.0), th().hover);
+                        }
+                        let on = self.rep.attach;
+                        let (sl, st, sr, sb) = (rr - self.pf(42.0), t + self.pf(5.0), rr - self.pf(4.0), b - self.pf(5.0));
+                        cv.round(sl, st, sr, sb, (sb - st) / 2.0, if on { GREEN } else { th().hover });
+                        let k = (sb - st) / 2.0 - self.pf(2.5);
+                        cv.dot(if on { sr - (sb - st) / 2.0 } else { sl + (sb - st) / 2.0 }, (st + sb) / 2.0, k, th().ink);
+                    }
+                    PHit::RSend => {
+                        let c = if !self.rep.ready() { th().hover } else if hov == hit { th().accent } else { th().tab };
+                        cv.round(l, t, rr, b, self.pf(10.0), c);
+                    }
                     PHit::ShowBr | PHit::ShowDsc => {
                         if hov == hit {
                             cv.round(l, t, rr, b, self.pf(8.0), th().hover);
@@ -489,7 +539,11 @@ impl App {
             }
             GdiFlush();
             // Texto
-            let title = if self.panel == Panel::Apps { "Apps a Discord" } else { "Configuración" };
+            let title = match self.panel {
+                Panel::Apps => "Apps a Discord",
+                Panel::Report => "Reportar un problema",
+                _ => "Configuración",
+            };
             cv.text(self.f.title, title, self.r(16, 8, PW - 40, 32), th().ink, DT_LEFT);
             cv.text(self.f.icon, "\u{E8BB}", self.r(PW - 36, 4, PW - 8, 32), if hov == PHit::Close { th().ink } else { th().dim }, DT_CENTER);
             for &(hit, r) in &rows {
@@ -527,6 +581,34 @@ impl App {
                         cv.text(self.f.small, t, z, th().ink, DT_CENTER);
                     }
                     PHit::Invite => cv.text(self.f.small, "Invitar el bot a un servidor", z, th().ink, DT_CENTER),
+                    PHit::Report => cv.text(self.f.small, "Reportar un problema", z, th().ink, DT_CENTER),
+                    PHit::Note(t) => cv.text_wrap(self.f.small, t, z, th().dim),
+                    PHit::RStatus => cv.text_wrap(self.f.small, &self.rep.error, z, RED),
+                    PHit::RText | PHit::RContact => {
+                        let f = if hit == PHit::RText { report::Field::Text } else { report::Field::Contact };
+                        let (val, hint) = if f == report::Field::Text {
+                            (&self.rep.text, "¿Qué pasó? ¿Qué estabas haciendo?")
+                        } else {
+                            (&self.rep.contact, "Tu mail, si querés respuesta")
+                        };
+                        let pad = RECT { left: z.left + self.px(10), top: z.top + self.px(7), right: z.right - self.px(10), bottom: z.bottom - self.px(7) };
+                        let focus = self.rep.focus == Some(f);
+                        if val.is_empty() && !focus {
+                            cv.text_box(self.f.small, hint, pad, th().dim3);
+                        } else {
+                            let s = if focus { format!("{val}_") } else { val.clone() };
+                            if f == report::Field::Text {
+                                cv.text_box(self.f.small, &s, pad, th().ink);
+                            } else {
+                                cv.text(self.f.small, &s, RECT { top: z.top, bottom: z.bottom, ..pad }, th().ink, DT_LEFT);
+                            }
+                        }
+                    }
+                    PHit::RAttach => cv.text(self.f.small, "Adjuntar datos técnicos", RECT { left: z.left + self.px(10), ..z }, th().ink, DT_LEFT),
+                    PHit::RSend => {
+                        let t = if self.rep.sending { "Enviando…" } else { "Enviar" };
+                        cv.text(self.f.small, t, z, if self.rep.ready() || self.rep.sending { th().ink } else { th().dim }, DT_CENTER);
+                    }
                     PHit::Device(i) => cv.text(self.f.small, short_dev(&self.br_devices[i]), inset, th().ink, DT_LEFT),
                     PHit::AllDevices => cv.text(self.f.small, if self.cfg_all_dev { "Mostrar solo cables" } else { "Mostrar todas las entradas" }, inset, th().dim, DT_LEFT),
                     PHit::Browser(i) => cv.text(self.f.small, &self.browsers[i].0, inset, th().ink, DT_LEFT),
@@ -561,7 +643,7 @@ impl App {
         self.panel_layout()
             .0
             .into_iter()
-            .find(|&(h, r)| !matches!(h, PHit::Msg(_)) && inside(self.pr(r)))
+            .find(|&(h, r)| !matches!(h, PHit::Msg(_) | PHit::Note(_) | PHit::RStatus) && inside(self.pr(r)))
             .map_or(PHit::None, |(h, _)| h)
     }
 
@@ -638,6 +720,14 @@ impl App {
                     _ => self.flash("No pude guardar el navegador"),
                 }
             }
+            PHit::Report => self.panel_open(Panel::Report),
+            PHit::RText | PHit::RContact => {
+                // Igual que el color hex: la card de costado toma el foco para recibir el teclado.
+                self.rep.focus = Some(if hit == PHit::RText { report::Field::Text } else { report::Field::Contact });
+                unsafe { SetForegroundWindow(self.panel_hwnd) };
+            }
+            PHit::RAttach => self.rep.attach = !self.rep.attach,
+            PHit::RSend => self.report_send(),
             PHit::Hotkey(i) => {
                 // Para recibir el teclado la card de costado toma el foco hasta que se elija.
                 self.panel_capture = if self.panel_capture == Some(i) { None } else { Some(i) };
@@ -658,6 +748,34 @@ impl App {
         a.vol = (v * 100.0).round();
         let msg = json!({ "cmd": "vol", "pid": a.pid, "v": v });
         self.mix_send(msg);
+        self.panel_render();
+    }
+
+    fn report_send(&mut self) {
+        if !self.rep.ready() {
+            if !self.rep.sending {
+                self.rep.error = "Escribí qué pasó antes de enviar".into();
+            }
+            return;
+        }
+        self.rep.sending = true;
+        self.rep.focus = None;
+        self.rep.error.clear();
+        report::send(self.hwnd as isize, report::body(&self.rep));
+    }
+
+    /// Respuesta del envio (WM_REPORT). Si salio bien se limpia el formulario; si no, queda para reintentar.
+    pub fn report_done(&mut self, ok: bool, err: String) {
+        self.rep.sending = false;
+        if ok {
+            self.rep = report::Form::new();
+            if self.panel == Panel::Report {
+                self.panel_close();
+            }
+            self.flash("Reporte enviado. ¡Gracias!");
+        } else {
+            self.rep.error = err;
+        }
         self.panel_render();
     }
 
@@ -774,6 +892,8 @@ pub unsafe extern "system" fn panel_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: L
             let ended = a.panel_capture.take().is_some() | a.panel_edit.take().is_some();
             if ended {
                 th().save();
+            }
+            if ended | a.rep.focus.take().is_some() {
                 a.panel_render();
             }
             0
