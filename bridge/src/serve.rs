@@ -1,5 +1,5 @@
 // Modo `serve`: la card lanza el puente como hijo y hablan por lineas JSON.
-//   card → puente: {"cmd":"token","token":"…"} · {"cmd":"join","guild":"…","channel":"…","device":"…"} · {"cmd":"leave"}
+//   card → puente: {"cmd":"invite"} · {"cmd":"token","token":"…"} · {"cmd":"join","guild":"…","channel":"…","device":"…"} · {"cmd":"leave"}
 //   puente → card: {"ev":"devices","list":[…]} · {"ev":"config",…} · {"ev":"guilds","list":[…]}
 //                  {"ev":"state","s":"…","msg":"…"} · {"ev":"level","v":0.0}
 //   mezclador (mixer.rs): {"cmd":"apps"|"route"|"vol"} → {"ev":"apps",…} · {"ev":"mix_error","msg":"…"}
@@ -201,6 +201,13 @@ pub async fn serve() {
                             gateway = Some(h);
                         }
                     }
+                    Some("invite") => {
+                        // Link para agregar el bot a un servidor: ver canales, conectarse y hablar.
+                        if let Some(id) = cfg["token"].as_str().and_then(crate::bot_id) {
+                            emit(json!({ "ev": "invite", "url": format!(
+                                "https://discord.com/oauth2/authorize?client_id={id}&scope=bot&permissions=3146752") }));
+                        }
+                    }
                     Some("join") => {
                         let (Some(g), Some(ch)) = (id(&c["guild"]), id(&c["channel"])) else { continue };
                         let Some(sb) = songbird.clone() else { state("sin_token", ""); continue };
@@ -222,9 +229,18 @@ pub async fn serve() {
                             Ok(call) => {
                                 let mut call = call.lock().await;
                                 let _ = call.deafen(true).await; // solo transmite
-                                call.play_only_input(src.into());
+                                let pista = call.play_only_input(src.into());
                                 tx = Some(Tx { stop, guild: g });
                                 state("transmitiendo", "");
+                                // Si la pista no arranca (codec, formato) songbird no avisa: se revisa a los 2 s.
+                                tokio::spawn(async move {
+                                    tokio::time::sleep(Duration::from_secs(2)).await;
+                                    if let Ok(info) = pista.get_info().await {
+                                        if let songbird::tracks::PlayMode::Errored(e) = info.playing {
+                                            state("error", &format!("el audio no arrancó: {e:?}"));
+                                        }
+                                    }
+                                });
                             }
                             Err(e) => {
                                 let _ = stop.send(());

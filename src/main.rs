@@ -6,6 +6,7 @@ mod bridge;
 mod cdp;
 mod engine;
 mod panel;
+mod theme;
 
 use engine::{Engine, Ev, WM_ENGINE};
 use serde_json::{json, Value};
@@ -24,6 +25,7 @@ use windows_sys::Win32::{
 
 use brave::wide;
 use panel::{PHit, Panel};
+use theme::th;
 
 // Medidas en px a 96 dpi; se escalan con `px`. El ancho es el de los cinco controles + margen.
 const W: i32 = 240;
@@ -39,16 +41,7 @@ const Y_BR: i32 = 226; // seccion del puente a Discord (solo con ytm-bridge.exe 
 const ROW: i32 = 40;
 const MAX_ROWS: usize = 8;
 
-// Paleta: fondo negro, tarjetas grafito, acento indigo.
-const BG: u32 = rgb(0, 0, 0);
-const CARD: u32 = rgb(0x14, 0x15, 0x18);
-const TAB: u32 = rgb(0x1d, 0x1f, 0x23);
-const HOVER: u32 = rgb(0x25, 0x28, 0x30);
-const HAIRLINE: u32 = rgb(0x1c, 0x1d, 0x20);
-const INK: u32 = rgb(0xf5, 0xf6, 0xf8);
-const DIM: u32 = rgb(0x93, 0x98, 0xa1);
-const DIM3: u32 = rgb(0x6b, 0x70, 0x79);
-const INDIGO: u32 = rgb(0x63, 0x66, 0xf1);
+// Colores de estado (fijos). Los de la interfaz (fondo, tarjetas, texto, acento) salen del tema: theme.rs.
 const GREEN: u32 = rgb(0x22, 0xc5, 0x5e);
 const AMBER: u32 = rgb(0xf5, 0xa5, 0x24);
 const CYAN: u32 = rgb(0x22, 0xd3, 0xee);
@@ -162,6 +155,7 @@ struct Canvas {
     bits: *mut u32,
     w: i32,
     h: i32,
+    opaque: Vec<(f32, f32, f32)>, // discos que no se vuelven transparentes con la translucidez (boton de play)
 }
 
 impl Canvas {
@@ -180,11 +174,17 @@ impl Canvas {
         let bmp = CreateDIBSection(dc, &bi, DIB_RGB_COLORS, &mut bits, null_mut(), 0);
         let old = SelectObject(dc, bmp);
         SetBkMode(dc, TRANSPARENT as _);
-        Canvas { dc, bmp, old, bits: bits.cast(), w, h }
+        Canvas { dc, bmp, old, bits: bits.cast(), w, h, opaque: Vec::new() }
     }
 
     fn pixels(&mut self) -> &mut [u32] {
         unsafe { std::slice::from_raw_parts_mut(self.bits, (self.w * self.h) as usize) }
+    }
+
+    /// Pinta todo con el fondo del tema (el DIB guarda 0x00RRGGBB; los colores del tema son COLORREF).
+    fn fill_bg(&mut self) {
+        self.opaque.clear();
+        self.pixels().fill(theme::px(th().bg));
     }
 
     /// Rectangulo redondeado (o circulo si rad = mitad del lado) con borde suavizado.
@@ -214,9 +214,11 @@ impl Canvas {
         self.round(x - r, y - r, x + r, y + r, r, c);
     }
 
-    /// Recorta la ventana con esquinas redondeadas y premultiplica el alfa.
+    /// Recorta la ventana con esquinas redondeadas y premultiplica el alfa. La card deja pasar un poco de
+    /// lo de atras (theme::OPACITY); el boton de play queda opaco para que no pierda contraste.
     fn finish(&mut self, rad: f32) {
         let (w, h) = (self.w, self.h);
+        let opaque = std::mem::take(&mut self.opaque);
         let (cx, cy, hw, hh) = (w as f32 / 2.0, h as f32 / 2.0, w as f32 / 2.0, h as f32 / 2.0);
         let px = self.pixels();
         for y in 0..h {
@@ -224,8 +226,11 @@ impl Canvas {
                 let i = (y * w + x) as usize;
                 let qx = ((x as f32 + 0.5 - cx).abs() - (hw - rad)).max(0.0);
                 let qy = ((y as f32 + 0.5 - cy).abs() - (hh - rad)).max(0.0);
-                let a = (0.5 - ((qx * qx + qy * qy).sqrt() - rad)).clamp(0.0, 1.0);
+                let mut a = (0.5 - ((qx * qx + qy * qy).sqrt() - rad)).clamp(0.0, 1.0);
                 let p = px[i] & 0xffffff;
+                if a > 0.0 && !opaque.iter().any(|&(ox, oy, r)| (x as f32 + 0.5 - ox).powi(2) + (y as f32 + 0.5 - oy).powi(2) <= r * r) {
+                    a *= theme::OPACITY;
+                }
                 px[i] = if a >= 1.0 {
                     p | 0xff00_0000
                 } else {
@@ -365,6 +370,10 @@ struct App {
     browser_cur: std::path::PathBuf,
     hotkeys: Vec<(i32, HOT_KEY_MODIFIERS, u32)>,
     cfg_all_dev: bool, // configuracion: mostrar todas las entradas de audio
+    blur_main: theme::BlurCache,
+    blur_panel: theme::BlurCache,
+    panel_edit: Option<(u8, String, u32)>, // (0 fondo/tinte, 1 acento; texto tecleado; color original)
+    sec_open: [bool; 6],
     show_br: bool,     // filas del puente y de Discord a la vista (card.json)
     show_dsc: bool,
 }
@@ -628,7 +637,7 @@ impl App {
             .map(|(g, id, n)| it(n, if many { g.name.clone() } else { String::new() }, &format!("{}:{id}", g.id)))
             .collect();
         if items.is_empty() {
-            self.flash(if self.br_guilds.is_empty() { "El bot no está en ningún servidor (o sigue conectando)" } else { "El servidor no tiene canales de voz" });
+            self.flash(if self.br_guilds.is_empty() { "Bot sin servidor: invitalo desde ⚙" } else { "El servidor no tiene canales de voz" });
             return;
         }
         self.clear_search();
@@ -740,10 +749,17 @@ impl App {
                 if self.br_state == "error" {
                     self.br_err = v["msg"].as_str().unwrap_or("error").to_string();
                     let m = format!("Puente: {}", self.br_err);
+                    engine::log(&m); // la card corta el mensaje; el texto entero queda en engine.log
                     self.flash(&m);
                 }
                 if self.br_state != "transmitiendo" {
                     self.br_level = 0.0;
+                }
+            }
+            Some("invite") => {
+                // Pagina de Discord para agregar el bot: se abre en el navegador elegido (perfil de siempre).
+                if let (Some(url), Some(exe)) = (v["url"].as_str(), brave::find_brave()) {
+                    let _ = std::process::Command::new(exe).arg(url).spawn();
                 }
             }
             Some("level") => self.br_level = v["v"].as_f64().unwrap_or(0.0) as f32,
@@ -1012,17 +1028,17 @@ impl App {
             self.canvas = Some(Canvas::new(w, h));
         }
         let mut cv = self.canvas.take().unwrap();
-        cv.pixels().fill(BG);
+        cv.fill_bg();
         let s = self.scale;
         let wf = w as f32;
 
         // Borde finito (hairline).
-        cv.round(0.0, 0.0, wf, h as f32, RADIUS * s, HAIRLINE);
-        cv.round(1.0, 1.0, wf - 1.0, h as f32 - 1.0, RADIUS * s - 1.0, BG);
+        cv.round(0.0, 0.0, wf, h as f32, RADIUS * s, th().hairline);
+        cv.round(1.0, 1.0, wf - 1.0, h as f32 - 1.0, RADIUS * s - 1.0, th().bg);
 
         let (line1, line2) = self.lines();
         let line2 = if self.msg.is_empty() { line2 } else { self.msg.as_str() };
-        let c2 = if self.msg.is_empty() { DIM } else { PINK };
+        let c2 = if self.msg.is_empty() { th().dim } else { PINK };
 
         // Punto de estado (lo reemplaza el icono de usuario si no hay sesion).
         let dot = if !self.ready {
@@ -1032,7 +1048,7 @@ impl App {
         } else if self.ad {
             AMBER
         } else if self.paused || self.title.is_empty() {
-            DIM3
+            th().dim3
         } else {
             GREEN
         };
@@ -1041,7 +1057,7 @@ impl App {
             let (dx, dy) = (self.pf(16.0), self.pf((H_MINI / 2) as f32));
             cv.dot(dx, dy, self.pf(4.0), dot);
             GdiFlush();
-            cv.text(self.f.title, line1, RECT { left: self.px(28), top: self.px(6), right: w - self.px(28), bottom: self.px(27) }, INK, DT_CENTER);
+            cv.text(self.f.title, line1, RECT { left: self.px(28), top: self.px(6), right: w - self.px(28), bottom: self.px(27) }, th().ink, DT_CENTER);
             cv.text(self.f.small, line2, RECT { left: self.px(28), top: self.px(26), right: w - self.px(28), bottom: self.px(43) }, c2, DT_CENTER);
             GdiFlush();
             cv.finish(RADIUS * s);
@@ -1056,7 +1072,7 @@ impl App {
         for hb in [Hit::Close, Hit::Login, Hit::Gear] {
             if self.hover == hb || (hb == Hit::Gear && !login && self.panel == Panel::Config && self.panel_target > 0.0) {
                 let z = self.zone(hb);
-                cv.round(z.left as f32, z.top as f32, z.right as f32, z.bottom as f32, self.pf(14.0), TAB);
+                cv.round(z.left as f32, z.top as f32, z.right as f32, z.bottom as f32, self.pf(14.0), th().tab);
             }
         }
 
@@ -1065,77 +1081,78 @@ impl App {
             if self.hover == hb {
                 let c = self.pf(self.ctrl_center(k) as f32);
                 let cy = self.pf((Y_CTRL + 20) as f32);
-                cv.round(c - self.pf(17.0), cy - self.pf(17.0), c + self.pf(17.0), cy + self.pf(17.0), self.pf(17.0), TAB);
+                cv.round(c - self.pf(17.0), cy - self.pf(17.0), c + self.pf(17.0), cy + self.pf(17.0), self.pf(17.0), th().tab);
             }
         }
         let (pc, pcy) = (self.pf(self.ctrl_center(0) as f32), self.pf((Y_CTRL + 20) as f32));
         let pr = self.pf(if self.hover == Hit::Play { 18.0 } else { 17.0 });
-        cv.round(pc - pr, pcy - pr, pc + pr, pcy + pr, pr, INK);
+        cv.round(pc - pr, pcy - pr, pc + pr, pcy + pr, pr, th().ink);
+        cv.opaque.push((pc, pcy, pr));
 
         // Progreso y volumen: misma barra fina.
         let (bl, br) = (self.pf(54.0), self.pf((W - 54) as f32));
         let by = self.pf((Y_PROG + 10) as f32);
         let bh = self.pf(if self.hover == Hit::Bar { 3.0 } else { 2.0 });
-        cv.round(bl, by - bh, br, by + bh, bh, HOVER);
+        cv.round(bl, by - bh, br, by + bh, bh, th().hover);
         if self.dur > 0.0 {
             let f = (self.cur_pos() / self.dur).clamp(0.0, 1.0) as f32;
             let x = bl + (br - bl) * f;
             if x - bl > 1.0 {
-                cv.round(bl, by - bh, x, by + bh, bh, if self.ad { AMBER } else { INDIGO });
+                cv.round(bl, by - bh, x, by + bh, bh, if self.ad { AMBER } else { th().accent });
             }
             if self.hover == Hit::Bar {
-                cv.round(x - self.pf(6.0), by - self.pf(6.0), x + self.pf(6.0), by + self.pf(6.0), self.pf(6.0), INK);
+                cv.round(x - self.pf(6.0), by - self.pf(6.0), x + self.pf(6.0), by + self.pf(6.0), self.pf(6.0), th().ink);
             }
         }
         let vy = self.pf((Y_VOL + 10) as f32);
         let vhot = self.hover == Hit::VolBar || self.dragging;
         let vh = self.pf(if vhot { 3.0 } else { 2.0 });
-        cv.round(bl, vy - vh, br, vy + vh, vh, HOVER);
+        cv.round(bl, vy - vh, br, vy + vh, vh, th().hover);
         let vx = bl + (br - bl) * (self.vol / 100.0) as f32;
         if vx - bl > 1.0 {
-            cv.round(bl, vy - vh, vx, vy + vh, vh, if self.muted { DIM3 } else { DIM });
+            cv.round(bl, vy - vh, vx, vy + vh, vh, if self.muted { th().dim3 } else { th().dim });
         }
         if vhot {
-            cv.round(vx - self.pf(6.0), vy - self.pf(6.0), vx + self.pf(6.0), vy + self.pf(6.0), self.pf(6.0), INK);
+            cv.round(vx - self.pf(6.0), vy - self.pf(6.0), vx + self.pf(6.0), vy + self.pf(6.0), self.pf(6.0), th().ink);
         }
 
         // Buscador de punta a punta y, debajo, las tres pestañas.
         let fz = self.zone(Hit::Field);
         cv.round(fz.left as f32, fz.top as f32, fz.right as f32, fz.bottom as f32, self.pf(12.0),
-            if self.active || self.hover == Hit::Field { TAB } else { CARD });
+            if self.active || self.hover == Hit::Field { th().tab } else { th().card });
         for t in [Hit::Lists, Hit::Again, Hit::Quick] {
             let z = self.zone(t);
-            let bg = if self.shown == t { INDIGO } else if self.hover == t { HOVER } else { TAB };
+            let bg = if self.shown == t { th().accent } else if self.hover == t { th().hover } else { th().tab };
             cv.round(z.left as f32, z.top as f32, z.right as f32, z.bottom as f32, self.pf(12.0), bg);
         }
 
         // Puente: una fila con estado + canal, conectar/salir y apps a Discord.
         if self.br_shown() {
             let z = self.r(12, Y_BR, W - 12, Y_BR + 32);
-            cv.round(z.left as f32, z.top as f32, z.right as f32, z.bottom as f32, self.pf(12.0), CARD);
+            cv.round(z.left as f32, z.top as f32, z.right as f32, z.bottom as f32, self.pf(12.0), th().card);
             let c = self.zone(Hit::BrChannel);
             if self.hover == Hit::BrChannel || self.shown == Hit::BrChannel {
-                cv.round(c.left as f32, c.top as f32, c.right as f32, c.bottom as f32, self.pf(12.0), HOVER);
+                cv.round(c.left as f32, c.top as f32, c.right as f32, c.bottom as f32, self.pf(12.0), th().hover);
             }
             for hb in [Hit::BrGo, Hit::BrApps] {
                 let b = self.zone(hb);
                 let on = hb == Hit::BrApps && self.panel == Panel::Apps && self.panel_target > 0.0;
                 if self.hover == hb || on {
-                    cv.round(b.left as f32, b.top as f32, b.right as f32, b.bottom as f32, self.pf(10.0), if on { INDIGO } else { HOVER });
+                    cv.round(b.left as f32, b.top as f32, b.right as f32, b.bottom as f32, self.pf(10.0), if on { th().accent } else { th().hover });
                 }
             }
             let dot = match self.br_state.as_str() {
                 "transmitiendo" => GREEN,
                 "conectando" | "entrando" => CYAN,
                 "error" => RED,
-                "listo" => DIM,
-                _ => DIM3,
+                "listo" => th().dim,
+                _ => th().dim3,
             };
             let (dx, dy) = (z.left as f32 + self.pf(14.0), (z.top + z.bottom) as f32 / 2.0 - self.pf(1.0));
             cv.dot(dx, dy, self.pf(4.0), dot);
             if self.br_state == "transmitiendo" {
                 let (l, r, y) = (c.left as f32 + self.pf(26.0), c.right as f32 - self.pf(6.0), z.bottom as f32 - self.pf(5.0));
-                cv.round(l, y - self.pf(1.0), r, y + self.pf(1.0), self.pf(1.0), HOVER);
+                cv.round(l, y - self.pf(1.0), r, y + self.pf(1.0), self.pf(1.0), th().hover);
                 let x = l + (r - l) * self.br_level.clamp(0.0, 1.0);
                 if x - l > 1.0 {
                     cv.round(l, y - self.pf(1.0), x, y + self.pf(1.0), self.pf(1.0), GREEN);
@@ -1147,9 +1164,9 @@ impl App {
         if self.dsc_shown() {
             let z = self.zone(Hit::DscRow);
             cv.round(z.left as f32, z.top as f32, z.right as f32, z.bottom as f32, self.pf(12.0),
-                if self.hover == Hit::DscRow { HOVER } else { CARD });
+                if self.hover == Hit::DscRow { th().hover } else { th().card });
             let (dx, dy) = (z.left as f32 + self.pf(14.0), (z.top + z.bottom) as f32 / 2.0);
-            cv.dot(dx, dy, self.pf(4.0), if self.dsc_open() { GREEN } else { DIM3 });
+            cv.dot(dx, dy, self.pf(4.0), if self.dsc_open() { GREEN } else { th().dim3 });
         }
 
         // Resultados en una tarjeta.
@@ -1157,55 +1174,55 @@ impl App {
         if n > 0 {
             let top = self.pf(self.base() as f32);
             let bottom = self.pf((self.row_y(n) + 4) as f32);
-            cv.round(self.pf(12.0), top, wf - self.pf(12.0), bottom, self.pf(13.0), CARD);
+            cv.round(self.pf(12.0), top, wf - self.pf(12.0), bottom, self.pf(13.0), th().card);
             for vis in 0..n {
                 let i = self.scroll + vis;
                 let hot = matches!(self.hover, Hit::Row(j) | Hit::Radio(j) if j == i);
                 if hot || self.sel == Some(i) {
                     let rr = self.row_rect(vis);
-                    cv.round(rr.left as f32, rr.top as f32, rr.right as f32, rr.bottom as f32, self.pf(9.0), TAB);
+                    cv.round(rr.left as f32, rr.top as f32, rr.right as f32, rr.bottom as f32, self.pf(9.0), th().tab);
                     if self.items[i].id.is_some() {
                         let rb = self.radio_rect(vis);
                         cv.round(rb.left as f32, rb.top as f32, rb.right as f32, rb.bottom as f32, self.pf(11.0),
-                            if self.hover == Hit::Radio(i) { INDIGO } else { HOVER });
+                            if self.hover == Hit::Radio(i) { th().accent } else { th().hover });
                     }
                 }
             }
             if self.items.len() > MAX_ROWS {
                 let span = (n as i32 * ROW) as f32;
-                let th = (span * MAX_ROWS as f32 / self.items.len() as f32).max(14.0);
-                let ty = self.row_y(0) as f32 + (span - th) * self.scroll as f32 / (self.items.len() - MAX_ROWS) as f32;
-                cv.round(wf - self.pf(16.0), self.pf(ty), wf - self.pf(13.0), self.pf(ty + th), self.pf(1.5), HOVER);
+                let thumb = (span * MAX_ROWS as f32 / self.items.len() as f32).max(14.0);
+                let ty = self.row_y(0) as f32 + (span - thumb) * self.scroll as f32 / (self.items.len() - MAX_ROWS) as f32;
+                cv.round(wf - self.pf(16.0), self.pf(ty), wf - self.pf(13.0), self.pf(ty + thumb), self.pf(1.5), th().hover);
             }
         }
 
         GdiFlush();
 
         // ---- Texto ----
-        cv.text(self.f.title, line1, self.r(40, 8, W - 40, 28), INK, DT_CENTER);
+        cv.text(self.f.title, line1, self.r(40, 8, W - 40, 28), th().ink, DT_CENTER);
         cv.text(self.f.small, line2, self.r(40, 27, W - 40, 44), c2, DT_CENTER);
-        cv.text(self.f.icon, "\u{E8BB}", self.zone(Hit::Close), if self.hover == Hit::Close { INK } else { DIM }, DT_CENTER);
+        cv.text(self.f.icon, "\u{E8BB}", self.zone(Hit::Close), if self.hover == Hit::Close { th().ink } else { th().dim }, DT_CENTER);
         if login {
-            cv.text(self.f.icon, "\u{E77B}", self.zone(Hit::Login), if self.hover == Hit::Login { INK } else { AMBER }, DT_CENTER);
+            cv.text(self.f.icon, "\u{E77B}", self.zone(Hit::Login), if self.hover == Hit::Login { th().ink } else { AMBER }, DT_CENTER);
         } else {
-            cv.text(self.f.icon, "\u{E713}", self.zone(Hit::Gear), if self.hover == Hit::Gear { INK } else { DIM }, DT_CENTER);
+            cv.text(self.f.icon, "\u{E713}", self.zone(Hit::Gear), if self.hover == Hit::Gear { th().ink } else { th().dim }, DT_CENTER);
         }
 
-        let ic = |hb: Hit| if self.hover == hb { INK } else { DIM };
+        let ic = |hb: Hit| if self.hover == hb { th().ink } else { th().dim };
         cv.text(self.f.icon, "\u{E8B1}", self.zone(Hit::Shuffle), ic(Hit::Shuffle), DT_CENTER);
         cv.text(self.f.icon_big, "\u{E892}", self.zone(Hit::Prev), ic(Hit::Prev), DT_CENTER);
-        cv.text(self.f.icon_big, if self.paused { "\u{E768}" } else { "\u{E769}" }, self.zone(Hit::Play), BG, DT_CENTER);
+        cv.text(self.f.icon_big, if self.paused { "\u{E768}" } else { "\u{E769}" }, self.zone(Hit::Play), th().bg, DT_CENTER);
         cv.text(self.f.icon_big, "\u{E893}", self.zone(Hit::Next), ic(Hit::Next), DT_CENTER);
         let (rg, rc) = match self.repeat.as_str() {
-            "ONE" => ("\u{E8ED}", INDIGO),
-            "ALL" => ("\u{E8EE}", INDIGO),
+            "ONE" => ("\u{E8ED}", th().accent),
+            "ALL" => ("\u{E8EE}", th().accent),
             _ => ("\u{E8EE}", ic(Hit::Repeat)),
         };
         cv.text(self.f.icon, rg, self.zone(Hit::Repeat), rc, DT_CENTER);
 
         if self.dur > 0.0 {
-            cv.text(self.f.small, &mmss(self.cur_pos()), self.r(6, Y_PROG, 48, Y_PROG + 20), DIM, DT_RIGHT);
-            cv.text(self.f.small, &mmss(self.dur), self.r(W - 48, Y_PROG, W - 6, Y_PROG + 20), DIM, DT_LEFT);
+            cv.text(self.f.small, &mmss(self.cur_pos()), self.r(6, Y_PROG, 48, Y_PROG + 20), th().dim, DT_RIGHT);
+            cv.text(self.f.small, &mmss(self.dur), self.r(W - 48, Y_PROG, W - 6, Y_PROG + 20), th().dim, DT_LEFT);
         }
         let vg = if self.muted || self.vol < 1.0 {
             "\u{E74F}"
@@ -1216,13 +1233,13 @@ impl App {
         } else {
             "\u{E995}"
         };
-        cv.text(self.f.icon, vg, self.zone(Hit::Vol), if self.hover == Hit::Vol { INK } else { DIM }, DT_RIGHT);
-        cv.text(self.f.small, &format!("{}", self.vol as i32), self.r(W - 48, Y_VOL, W - 6, Y_VOL + 20), DIM, DT_LEFT);
+        cv.text(self.f.icon, vg, self.zone(Hit::Vol), if self.hover == Hit::Vol { th().ink } else { th().dim }, DT_RIGHT);
+        cv.text(self.f.small, &format!("{}", self.vol as i32), self.r(W - 48, Y_VOL, W - 6, Y_VOL + 20), th().dim, DT_LEFT);
 
-        cv.text(self.f.icon, "\u{E721}", self.r(22, Y_SRCH, 40, Y_SRCH + 36), DIM3, DT_CENTER);
+        cv.text(self.f.icon, "\u{E721}", self.r(22, Y_SRCH, 40, Y_SRCH + 36), th().dim3, DT_CENTER);
         let field = self.r(44, Y_SRCH, W - 24, Y_SRCH + 36);
         if self.query.is_empty() {
-            cv.text(self.f.text, "Buscar canción…", field, DIM3, DT_LEFT);
+            cv.text(self.f.text, "Buscar canción…", field, th().dim3, DT_LEFT);
         } else {
             // Si no entra, se ve el final (donde se escribe).
             let tw = measure(self.f.text, &self.query);
@@ -1233,7 +1250,7 @@ impl App {
             }
             let wq: Vec<u16> = self.query.encode_utf16().collect();
             let old = SelectObject(cv.dc, self.f.text);
-            SetTextColor(cv.dc, INK);
+            SetTextColor(cv.dc, th().ink);
             let rgn = CreateRectRgn(field.left, field.top, field.right, field.bottom);
             SelectClipRgn(cv.dc, rgn);
             DrawTextW(cv.dc, wq.as_ptr(), wq.len() as i32, &mut f2, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
@@ -1245,13 +1262,13 @@ impl App {
             let tw = if self.query.is_empty() { 0 } else { measure(self.f.text, &self.query) };
             let x = field.left + tw.min(field.right - field.left);
             GdiFlush();
-            cv.round(x as f32, self.pf((Y_SRCH + 10) as f32), x as f32 + self.pf(1.5).max(1.0), self.pf((Y_SRCH + 26) as f32), 0.5, INDIGO);
+            cv.round(x as f32, self.pf((Y_SRCH + 10) as f32), x as f32 + self.pf(1.5).max(1.0), self.pf((Y_SRCH + 26) as f32), 0.5, th().accent);
         }
         for (t, label) in [(Hit::Lists, "Listas"), (Hit::Again, "Escuchar otra vez"), (Hit::Quick, "Selección rápida")] {
             let mut z = self.zone(t);
             z.left += self.px(4);
             z.right -= self.px(4);
-            cv.text_wrap(self.f.small, label, z, if self.shown == t || self.hover == t { INK } else { DIM });
+            cv.text_wrap(self.f.small, label, z, if self.shown == t || self.hover == t { th().ink } else { th().dim });
         }
 
         if self.br_shown() {
@@ -1264,17 +1281,18 @@ impl App {
                     ("transmitiendo", Some(c)) => format!("{c} · al aire"),
                     ("entrando", Some(c)) => format!("Entrando a {c}…"),
                     ("conectando", _) => "Puente · conectando…".into(),
+                    ("listo", None) if self.br_guilds.is_empty() => "Invitá el bot al servidor".into(),
                     ("error", _) => format!("Puente · {}", self.br_err),
                     (_, Some(c)) => c,
                     _ => "Puente · elegí canal".into(),
                 }
             };
             let tz = RECT { left: c.left + self.px(26), right: c.right - self.px(6), bottom: c.bottom - self.px(2), ..c };
-            cv.text(self.f.small, &label, tz, if self.br_state == "transmitiendo" { INK } else { DIM }, DT_LEFT);
+            cv.text(self.f.small, &label, tz, if self.br_state == "transmitiendo" { th().ink } else { th().dim }, DT_LEFT);
             let ready = self.br_has_token && self.br_channel.is_some();
-            let (gi, gc) = if self.br_busy() { ("\u{E778}", RED) } else { ("\u{E717}", if ready { INK } else { DIM3 }) };
+            let (gi, gc) = if self.br_busy() { ("\u{E778}", RED) } else { ("\u{E717}", if ready { th().ink } else { th().dim3 }) };
             cv.text(self.f.icon, gi, self.zone(Hit::BrGo), gc, DT_CENTER);
-            cv.text(self.f.icon, "\u{E8D6}", self.zone(Hit::BrApps), if self.mix_apps.iter().any(|a| a.on) { GREEN } else { INK }, DT_CENTER);
+            cv.text(self.f.icon, "\u{E8D6}", self.zone(Hit::BrApps), if self.mix_apps.iter().any(|a| a.on) { GREEN } else { th().ink }, DT_CENTER);
         }
 
         if self.dsc_shown() {
@@ -1282,9 +1300,9 @@ impl App {
             let open = self.dsc_open();
             let label = if open { "Discord · abierto (clic cierra)" } else { "Discord · abrir ventana" };
             let tz = RECT { left: z.left + self.px(26), top: z.top, right: z.right - self.px(26), bottom: z.bottom };
-            cv.text(self.f.small, label, tz, if open { INK } else { DIM }, DT_LEFT);
+            cv.text(self.f.small, label, tz, if open { th().ink } else { th().dim }, DT_LEFT);
             let cz = RECT { left: z.right - self.px(26), ..z };
-            cv.text(self.f.icon, if open { "\u{E711}" } else { "\u{E8A7}" }, cz, DIM, DT_CENTER);
+            cv.text(self.f.icon, if open { "\u{E711}" } else { "\u{E8A7}" }, cz, th().dim, DT_CENTER);
         }
 
         for vis in 0..n {
@@ -1293,10 +1311,10 @@ impl App {
             let y = self.row_y(vis);
             let hot = matches!(self.hover, Hit::Row(j) | Hit::Radio(j) if j == i) || self.sel == Some(i);
             let right = if it.id.is_some() && hot { W - 82 } else { W - 26 };
-            cv.text(self.f.text, &it.title, self.r(26, y + 4, right, y + 22), INK, DT_LEFT);
-            cv.text(self.f.small, &it.sub, self.r(26, y + 21, right, y + 37), DIM, DT_LEFT);
+            cv.text(self.f.text, &it.title, self.r(26, y + 4, right, y + 22), th().ink, DT_LEFT);
+            cv.text(self.f.small, &it.sub, self.r(26, y + 21, right, y + 37), th().dim, DT_LEFT);
             if it.id.is_some() && hot {
-                cv.text(self.f.small, "Radio", self.radio_rect(vis), INK, DT_CENTER);
+                cv.text(self.f.small, "Radio", self.radio_rect(vis), th().ink, DT_CENTER);
             }
         }
 
@@ -1321,6 +1339,9 @@ impl App {
         let blend = BLENDFUNCTION { BlendOp: AC_SRC_OVER as u8, BlendFlags: 0, SourceConstantAlpha: 255, AlphaFormat: AC_SRC_ALPHA as u8 };
         UpdateLayeredWindow(self.hwnd, null_mut(), &dst, &size, cv.dc, &src, 0, &blend, ULW_ALPHA);
         self.canvas = Some(cv);
+        let mut c = self.blur_main;
+        theme::blur(self.hwnd, &mut c, w, w, 0, h, (RADIUS * self.scale).round() as i32);
+        self.blur_main = c;
         self.panel_present();
     }
 }
@@ -1355,9 +1376,21 @@ unsafe fn clipboard() -> String {
     s
 }
 
+/// ClearType asume un fondo opaco y la card es translucida: suavizado en escala de grises.
 unsafe fn font(px: i32, weight: i32, face: &str) -> HFONT {
     CreateFontW(-px, 0, 0, 0, weight, 0, 0, 0, DEFAULT_CHARSET as u32, OUT_DEFAULT_PRECIS as u32,
-        CLIP_DEFAULT_PRECIS as u32, CLEARTYPE_QUALITY as u32, DEFAULT_PITCH as u32, wide(face).as_ptr())
+        CLIP_DEFAULT_PRECIS as u32, ANTIALIASED_QUALITY as u32, DEFAULT_PITCH as u32, wide(face).as_ptr())
+}
+
+unsafe fn make_fonts(scale: f32) -> Fonts {
+    let px = |v: i32| (v as f32 * scale).round() as i32;
+    Fonts {
+        title: font(px(14), 600, "Segoe UI"),
+        text: font(px(13), 400, "Segoe UI"),
+        small: font(px(11), 400, "Segoe UI"),
+        icon: font(px(13), 400, "Segoe MDL2 Assets"),
+        icon_big: font(px(15), 400, "Segoe MDL2 Assets"),
+    }
 }
 
 fn pos_file() -> std::path::PathBuf {
@@ -1642,13 +1675,7 @@ fn main() {
             hwnd,
             eng: engine::start(hwnd as isize),
             scale,
-            f: Fonts {
-                title: font(px(14), 600, "Segoe UI"),
-                text: font(px(13), 400, "Segoe UI"),
-                small: font(px(11), 400, "Segoe UI"),
-                icon: font(px(13), 400, "Segoe MDL2 Assets"),
-                icon_big: font(px(15), 400, "Segoe MDL2 Assets"),
-            },
+            f: make_fonts(scale),
             canvas: None,
             dirty: false,
             title: String::new(),
@@ -1709,6 +1736,10 @@ fn main() {
             browser_cur: brave::find_brave().unwrap_or_default(),
             hotkeys: panel::load_hotkeys(),
             cfg_all_dev: false,
+            blur_main: (0, 0, 0),
+            blur_panel: (0, 0, 0),
+            panel_edit: None,
+            sec_open: [true, true, true, false, false, false],
             show_br: panel::card_pref("puente"),
             show_dsc: panel::card_pref("discord"),
         });

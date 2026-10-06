@@ -37,6 +37,7 @@ del usuario.
 - Doble clic en canción/artista: colapsa la tarjeta a ese tamaño; otro doble clic la abre.
 - Volumen: barra bajo el progreso (clic o arrastre), ícono = silenciar, rueda sobre la tarjeta ±5.
 - Botones: aleatorio (mezcla la cola), anterior, play, siguiente, repetir (no → lista → canción).
+- Engranaje (arriba a la izquierda): configuración en una card que sale al costado. Apariencia: color de fondo y acento (hex o paleta); la card es translúcida con el fondo desenfocado por Windows. Se guarda en `theme.json`.
 - Bajo el buscador: Listas (playlists de la cuenta), Escuchar otra vez y Selección rápida (estantes de la portada). Tocar la activa la cierra.
 
 ### Atajos globales (andan dentro de juegos)
