@@ -280,11 +280,11 @@ pub fn launch_discord(exe: &Path, x: i32, y: i32, w: i32, h: i32) -> io::Result<
         "--disable-extensions".into(),
         "--disable-sync".into(),
         "--disable-default-apps".into(),
-        // Menos RAM sin tocar Discord, solo nuestro Brave: sin GPU y JS sin optimizador. Nada de
-        // --single-process: con la sesion abierta dejaba la ventana en ~220 % de un nucleo y la voz
-        // entraba en bucle (autenticando/desconectado); sin el, ~12 % y unos 175 MB mas.
+        // Menos RAM sin tocar Discord, solo nuestro Brave: sin GPU. Nada de --single-process (con la
+        // sesion abierta dejaba la ventana en ~220 % de un nucleo) ni --js-flags=--lite-mode: apaga
+        // WebAssembly, y Discord cifra la voz de punta a punta con WebAssembly (la voz quedaba en
+        // bucle autenticando/desconectado).
         "--disable-gpu".into(),
-        "--js-flags=--lite-mode".into(),
         "--disable-features=Translate,MediaRouter,OptimizationHints,BackForwardCache,SpareRendererForSitePerProcess,PaintHolding".into(),
         format!("--window-position={x},{y}"),
         format!("--window-size={w},{h}"),
