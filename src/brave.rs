@@ -33,6 +33,14 @@ fn profile_dir() -> PathBuf {
 }
 
 pub fn find_brave() -> Option<PathBuf> {
+    // Navegador elegido en el instalador (Brave, Brave Origin portatil u otro Chromium).
+    let dir = std::env::current_exe().ok()?.parent()?.to_path_buf();
+    if let Some(p) = std::fs::read_to_string(dir.join("navegador.txt")).ok().map(|s| PathBuf::from(s.trim())).filter(|p| p.exists()) {
+        return Some(p);
+    }
+    if let Some(p) = Some(dir.join("brave").join("brave.exe")).filter(|p| p.exists()) {
+        return Some(p);
+    }
     let sub = wide(r"SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths\brave.exe");
     for root in [HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE] {
         let mut buf = [0u16; 1024];
@@ -55,9 +63,54 @@ pub fn find_brave() -> Option<PathBuf> {
         .find(|p| p.exists())
 }
 
+/// Ruta en App Paths (usuario o equipo), si existe.
+fn app_path(exe: &str) -> Option<PathBuf> {
+    let sub = wide(&format!(r"SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths\{exe}"));
+    for root in [HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE] {
+        let mut buf = [0u16; 1024];
+        let mut len = (buf.len() * 2) as u32;
+        let r = unsafe { RegGetValueW(root, sub.as_ptr(), null(), RRF_RT_REG_SZ, null_mut(), buf.as_mut_ptr().cast(), &mut len) };
+        if r == 0 {
+            let n = (len as usize / 2).saturating_sub(1);
+            let p = PathBuf::from(String::from_utf16_lossy(&buf[..n]).trim_matches('"'));
+            if p.exists() {
+                return Some(p);
+            }
+        }
+    }
+    None
+}
+
+/// Navegadores Chromium instalados (los mismos que ofrece el instalador), para la configuracion.
+pub fn browsers() -> Vec<(String, PathBuf)> {
+    let mut v: Vec<(String, PathBuf)> = Vec::new();
+    if let Some(p) = std::env::current_exe().ok().and_then(|e| Some(e.parent()?.join("brave").join("brave.exe"))).filter(|p| p.exists()) {
+        v.push(("Brave Origin (portátil)".into(), p));
+    }
+    for (name, exe, sub) in [
+        ("Brave", "brave.exe", r"BraveSoftware\Brave-Browser\Application\brave.exe"),
+        ("Google Chrome · sin Shields", "chrome.exe", r"Google\Chrome\Application\chrome.exe"),
+        ("Microsoft Edge · sin Shields", "msedge.exe", r"Microsoft\Edge\Application\msedge.exe"),
+        ("Vivaldi · sin Shields", "vivaldi.exe", r"Vivaldi\Application\vivaldi.exe"),
+    ] {
+        let found = app_path(exe).or_else(|| {
+            ["LOCALAPPDATA", "ProgramFiles", "ProgramFiles(x86)"]
+                .iter()
+                .filter_map(|e| std::env::var(e).ok())
+                .map(|d| PathBuf::from(d).join(sub))
+                .find(|p| p.exists())
+        });
+        if let Some(p) = found.filter(|p| !v.iter().any(|x| &x.1 == p)) {
+            v.push((name.into(), p));
+        }
+    }
+    v
+}
+
 pub struct Proc {
     job: HANDLE,
     process: HANDLE,
+    pub pid: u32,
 }
 unsafe impl Send for Proc {}
 
@@ -121,8 +174,7 @@ fn spawn(exe: &Path, args: &[String]) -> io::Result<Proc> {
         AssignProcessToJobObject(job, pi.hProcess);
         ResumeThread(pi.hThread);
         CloseHandle(pi.hThread);
-        let _ = std::fs::write(data_dir().join("brave.pid"), pi.dwProcessId.to_string());
-        Ok(Proc { job, process: pi.hProcess })
+        Ok(Proc { job, process: pi.hProcess, pid: pi.dwProcessId })
     }
 }
 
@@ -188,6 +240,7 @@ BackForwardCache,SpareRendererForSitePerProcess,AudioServiceOutOfProcess,PaintHo
     .map(|s| s.to_string())
     .collect();
     let p = spawn(exe, &args)?;
+    let _ = std::fs::write(data_dir().join("brave.pid"), p.pid.to_string());
     for _ in 0..150 {
         sleep(Duration::from_millis(100));
         if let Some(port) = std::fs::read_to_string(&port_file).ok().and_then(|s| s.lines().next()?.parse().ok()) {
@@ -200,17 +253,48 @@ BackForwardCache,SpareRendererForSitePerProcess,AudioServiceOutOfProcess,PaintHo
     Err(io::Error::other("Brave no respondió"))
 }
 
-/// Unica vez que se ve Brave: ventana normal para iniciar sesion en Google.
-pub fn launch_login(exe: &Path) -> io::Result<Proc> {
+/// Unica vez que se ve Brave: ventana normal para iniciar sesion (Google o Discord).
+pub fn launch_login(exe: &Path, url: &str) -> io::Result<Proc> {
     let prof = profile_dir();
     std::fs::create_dir_all(&prof)?;
     let args = [
         format!("--user-data-dir={}", prof.display()),
         "--no-first-run".into(),
         "--no-default-browser-check".into(),
-        "--app=https://accounts.google.com/ServiceLogin?service=youtube&continue=https://music.youtube.com/".into(),
+        format!("--app={url}"),
     ];
     spawn(exe, &args)
+}
+
+/// Discord web en una ventana normal y visible, con perfil propio. No se inyecta nada: los botones
+/// son los de Discord. Proceso aparte para que al cerrarla vuelva toda la RAM.
+/// OJO en forks: no inyectar scripts/CSS ni abrir puerto de depuracion aca. Manejar una cuenta de
+/// usuario es self-bot y Discord puede suspenderla (ver README, "Discord: aviso para forks").
+pub fn launch_discord(exe: &Path, x: i32, y: i32, w: i32, h: i32) -> io::Result<Proc> {
+    let prof = data_dir().join("perfil-discord");
+    std::fs::create_dir_all(&prof)?;
+    let args = [
+        format!("--user-data-dir={}", prof.display()),
+        "--no-first-run".into(),
+        "--no-default-browser-check".into(),
+        "--disable-extensions".into(),
+        "--disable-sync".into(),
+        "--disable-default-apps".into(),
+        // Menos RAM sin tocar Discord, solo nuestro Brave (medido en /login: ~237 MB contra 350-500):
+        // un proceso, sin GPU y JS sin optimizador. La voz (WebRTC) es nativa, no depende del JS.
+        "--single-process".into(),
+        "--disable-gpu".into(),
+        "--in-process-gpu".into(),
+        "--js-flags=--lite-mode".into(),
+        "--disable-features=Translate,MediaRouter,OptimizationHints,BackForwardCache,SpareRendererForSitePerProcess,PaintHolding".into(),
+        format!("--window-position={x},{y}"),
+        format!("--window-size={w},{h}"),
+        "--app=https://discord.com/channels/@me".into(),
+    ];
+    let p = spawn(exe, &args)?;
+    // El mezclador del puente lo excluye: mandar Discord al cable haria eco.
+    let _ = std::fs::write(data_dir().join("discord.pid"), p.pid.to_string());
+    Ok(p)
 }
 
 pub fn http_get(port: u16, path: &str) -> io::Result<String> {

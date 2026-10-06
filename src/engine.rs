@@ -17,6 +17,7 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{PostMessageW, WM_APP};
 
 pub const WM_ENGINE: u32 = WM_APP + 1;
 const PAGE_JS: &str = include_str!("page.js");
+const YTM_LOGIN: &str = "https://accounts.google.com/ServiceLogin?service=youtube&continue=https://music.youtube.com/";
 
 pub enum Ev {
     State(Value),
@@ -113,13 +114,13 @@ impl Engine {
 
     fn run(self: Arc<Self>) {
         let Some(exe) = brave::find_brave() else {
-            self.post(Ev::Status("No encontré Brave instalado".into()));
+            self.post(Ev::Status("No encontré el navegador (reinstalá y elegí uno)".into()));
             return;
         };
         while !self.exiting.load(SeqCst) {
             if self.login.load(SeqCst) {
                 self.post(Ev::Status("Iniciá sesión en la ventana de Brave y cerrala al terminar".into()));
-                match brave::launch_login(&exe) {
+                match brave::launch_login(&exe, YTM_LOGIN) {
                     Ok(p) => {
                         p.wait(u32::MAX);
                     }
