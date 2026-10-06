@@ -23,10 +23,8 @@ pub enum PHit {
     None,
     Close,
     Section(usize),
-    Style(bool),
     Color(u8),
     Preset(u8, usize),
-    Opacity,
     Msg(&'static str),
     App(usize),
     Sw(usize),
@@ -52,7 +50,6 @@ pub const EDITABLE: &[(i32, &str)] = &[
 
 // Paletas rapidas (COLORREF); el campo hex permite cualquier otro color.
 const PRESET_SOLID: [u32; 7] = [rgb(0, 0, 0), rgb(0x0d, 0x0f, 0x14), rgb(0x0b, 0x12, 0x20), rgb(0x1a, 0x0f, 0x14), rgb(0x0c, 0x15, 0x11), rgb(0x1f, 0x1f, 0x22), rgb(0xf4, 0xf1, 0xea)];
-const PRESET_TINT: [u32; 7] = [rgb(0x10, 0x12, 0x1c), rgb(0x1a, 0x10, 0x30), rgb(0x0a, 0x1f, 0x2a), rgb(0x2a, 0x0f, 0x18), rgb(0x10, 0x10, 0x10), rgb(0x1f, 0x1a, 0x10), rgb(0xe8, 0xee, 0xf7)];
 const PRESET_ACCENT: [u32; 7] = [rgb(0x63, 0x66, 0xf1), rgb(0x8b, 0x5c, 0xf6), rgb(0xec, 0x48, 0x99), rgb(0xf9, 0x73, 0x16), rgb(0x22, 0xc5, 0x5e), rgb(0x06, 0xb6, 0xd4), rgb(0xea, 0xb3, 0x08)];
 const SECTIONS: [&str; 6] = ["EN LA CARD", "APARIENCIA", "BOT DE DISCORD", "ENTRADA DEL PUENTE", "NAVEGADOR", "ATAJOS"];
 
@@ -157,10 +154,6 @@ impl App {
                 }
                 head(1, &mut y, &mut v);
                 if open(1) {
-                    let t = th();
-                    row(PHit::Style(false), 12, PW / 2 - 1, y, y + P_ROW, &mut v);
-                    row(PHit::Style(true), PW / 2 + 1, PW - 12, y, y + P_ROW, &mut v);
-                    y += P_ROW + 4;
                     row(PHit::Color(0), 12, PW - 12, y, y + P_ROW, &mut v);
                     y += P_ROW;
                     row(PHit::Preset(0, 0), 12, PW - 12, y, y + P_ROW, &mut v);
@@ -169,10 +162,6 @@ impl App {
                     y += P_ROW;
                     row(PHit::Preset(1, 0), 12, PW - 12, y, y + P_ROW, &mut v);
                     y += P_ROW;
-                    if t.glass {
-                        row(PHit::Opacity, 12, PW - 12, y, y + P_ROW, &mut v);
-                        y += P_ROW;
-                    }
                 }
                 if self.br.is_some() {
                     head(2, &mut y, &mut v);
@@ -223,11 +212,7 @@ impl App {
     }
 
     fn presets(&self, which: u8) -> &'static [u32; 7] {
-        match (which, th().glass) {
-            (1, _) => &PRESET_ACCENT,
-            (_, true) => &PRESET_TINT,
-            _ => &PRESET_SOLID,
-        }
+        if which == 1 { &PRESET_ACCENT } else { &PRESET_SOLID }
     }
 
     /// Centro (px logicos, desde el borde izquierdo de la fila) del circulo i de una paleta.
@@ -240,16 +225,7 @@ impl App {
         if save {
             t.save();
         }
-        let glass_changed = t.glass != th().glass;
         theme::set(t);
-        if glass_changed {
-            unsafe {
-                let old = std::mem::replace(&mut self.f, make_fonts(self.scale, th().glass));
-                for f in [old.title, old.text, old.small, old.icon, old.icon_big] {
-                    DeleteObject(f);
-                }
-            }
-        }
         self.panel_render();
         self.invalidate();
     }
@@ -258,24 +234,13 @@ impl App {
         th().clone()
     }
 
-    /// Color elegido (0 fondo/tinte, 1 acento) en el tema `t`.
+    /// Color elegido (0 fondo, 1 acento) en el tema `t`.
     fn theme_set_color(t: &mut theme::Theme, which: u8, c: u32) {
         match which {
-            0 if t.glass => t.glass_tint = c,
-            0 => t.solid_bg = c,
+            0 => t.bg = c,
             _ => t.accent = c,
         }
         t.derive();
-    }
-
-    fn opacity_from_x(&mut self, x: i32, save: bool) {
-        let Some(&(_, r)) = self.panel_layout().0.iter().find(|(h, _)| *h == PHit::Opacity) else { return };
-        let (l, rr) = (self.px(r.left + 94), self.px(r.right - 38));
-        let f = ((x + self.panel_sx - l) as f32 / (rr - l) as f32).clamp(0.0, 1.0);
-        let mut t = self.theme_edit();
-        t.opacity = theme::OPACITY_MIN + f * (theme::OPACITY_MAX - theme::OPACITY_MIN);
-        t.derive();
-        self.theme_apply(t, save);
     }
 
     /// Caracter tecleado mientras se edita un color hex. Enter confirma, Esc deja el color de antes.
@@ -461,18 +426,17 @@ impl App {
                             cv.round(l, t, rr, b, self.pf(8.0), th().hover);
                         }
                     }
-                    PHit::Style(g) => cv.round(l, t, rr, b, self.pf(9.0), if th().glass == g { th().accent } else if hov == hit { th().hover } else { th().tab }),
                     PHit::Color(w) => {
                         if hov == hit || self.panel_edit.as_ref().is_some_and(|e| e.0 == w) {
                             cv.round(l, t, rr, b, self.pf(8.0), th().hover);
                         }
-                        let c = if w == 0 { th().base() } else { th().accent };
+                        let c = if w == 0 { th().bg } else { th().accent };
                         let (cx, cy) = (rr - self.pf(16.0), (t + b) / 2.0);
                         cv.dot(cx, cy, self.pf(8.5), th().dim3);
                         cv.dot(cx, cy, self.pf(7.0), c);
                     }
                     PHit::Preset(w, _) => {
-                        let cur = if w == 0 { th().base() } else { th().accent };
+                        let cur = if w == 0 { th().bg } else { th().accent };
                         for (i, c) in self.presets(w).iter().enumerate() {
                             let cx = l + self.pf(self.preset_x(i) as f32 - 12.0);
                             let cy = (t + b) / 2.0;
@@ -486,14 +450,6 @@ impl App {
                                 cv.dot(cx, cy, self.pf(5.5), *c);
                             }
                         }
-                    }
-                    PHit::Opacity => {
-                        let (tl, tr, y) = (l + self.pf(82.0), rr - self.pf(38.0), (t + b) / 2.0);
-                        cv.round(tl, y - self.pf(2.0), tr, y + self.pf(2.0), self.pf(2.0), th().hover);
-                        let f = (th().opacity - theme::OPACITY_MIN) / (theme::OPACITY_MAX - theme::OPACITY_MIN);
-                        let x = tl + (tr - tl) * f;
-                        cv.round(tl, y - self.pf(2.0), x, y + self.pf(2.0), self.pf(2.0), th().accent);
-                        cv.dot(x, y, self.pf(5.0), th().ink);
                     }
                     PHit::Token => cv.round(l, t, rr, b, self.pf(10.0), if hov == hit { th().accent } else { th().tab }),
                     PHit::ShowBr | PHit::ShowDsc => {
@@ -540,24 +496,15 @@ impl App {
                         let ch = if self.sec_open[i] { "\u{E70E}" } else { "\u{E70D}" };
                         cv.text(self.f.icon, ch, RECT { left: z.right - self.px(24), ..z }, th().dim3, DT_CENTER);
                     }
-                    PHit::Style(g) => {
-                        let on = th().glass == g;
-                        cv.text(self.f.small, if g { "Cristal" } else { "Sólido" }, z, if on { theme::on(th().accent) } else { th().dim }, DT_CENTER);
-                    }
                     PHit::Color(w) => {
-                        let name = if w == 1 { "Acento" } else if th().glass { "Tinte" } else { "Fondo" };
+                        let name = if w == 1 { "Acento" } else { "Fondo" };
                         cv.text(self.f.small, name, RECT { left: z.left + self.px(10), ..z }, th().ink, DT_LEFT);
                         let val = match &self.panel_edit {
                             Some((e, buf, _)) if *e == w => format!("#{buf}_"),
-                            _ => theme::hex(if w == 0 { th().base() } else { th().accent }),
+                            _ => theme::hex(if w == 0 { th().bg } else { th().accent }),
                         };
                         let c = if self.panel_edit.as_ref().is_some_and(|e| e.0 == w) { AMBER } else { th().dim };
                         cv.text(self.f.small, &val, RECT { right: z.right - self.px(32), ..z }, c, DT_RIGHT);
-                    }
-                    PHit::Opacity => {
-                        cv.text(self.f.small, "Opacidad", RECT { left: z.left + self.px(10), ..z }, th().ink, DT_LEFT);
-                        let v = format!("{}%", (th().opacity * 100.0).round() as i32);
-                        cv.text(self.f.small, &v, RECT { left: z.right - self.px(36), ..z }, th().dim, DT_CENTER);
                     }
                     PHit::Msg(t) => cv.text(self.f.small, t, z, th().dim, DT_CENTER),
                     PHit::App(i) => {
@@ -641,19 +588,11 @@ impl App {
                 self.invalidate(); // la card cambia de alto; la de costado la sigue
             }
             PHit::Section(i) => self.sec_open[i] = !self.sec_open[i],
-            PHit::Style(g) => {
-                if th().glass != g {
-                    let mut t = self.theme_edit();
-                    t.glass = g;
-                    t.derive();
-                    self.theme_apply(t, true);
-                }
-            }
             PHit::Color(w) => {
                 if self.panel_edit.as_ref().is_some_and(|e| e.0 == w) {
                     self.panel_edit = None;
                 } else {
-                    let cur = if w == 0 { th().base() } else { th().accent };
+                    let cur = if w == 0 { th().bg } else { th().accent };
                     self.panel_edit = Some((w, String::new(), cur));
                     // Para recibir el teclado, la card de costado toma el foco hasta confirmar.
                     unsafe { SetForegroundWindow(self.panel_hwnd) };
@@ -669,11 +608,6 @@ impl App {
                     Self::theme_set_color(&mut t, w, c);
                     self.theme_apply(t, true);
                 }
-            }
-            PHit::Opacity => {
-                self.op_drag = true;
-                unsafe { SetCapture(self.panel_hwnd) };
-                self.opacity_from_x(x, false);
             }
             PHit::Token => self.br_paste_token(),
             PHit::AllDevices => self.cfg_all_dev = !self.cfg_all_dev,
@@ -780,11 +714,6 @@ pub unsafe extern "system" fn panel_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: L
             if a.mix_drag.take().is_some() {
                 ReleaseCapture();
             }
-            if a.op_drag {
-                a.op_drag = false;
-                ReleaseCapture();
-                th().save();
-            }
             0
         }
         WM_CHAR => {
@@ -794,10 +723,6 @@ pub unsafe extern "system" fn panel_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: L
         WM_MOUSEMOVE => {
             if let Some(i) = a.mix_drag {
                 a.mix_vol_from_x(i, mx);
-                return 0;
-            }
-            if a.op_drag {
-                a.opacity_from_x(mx, false);
                 return 0;
             }
             if !a.panel_tracking {
