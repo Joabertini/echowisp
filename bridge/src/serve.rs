@@ -229,9 +229,18 @@ pub async fn serve() {
                             Ok(call) => {
                                 let mut call = call.lock().await;
                                 let _ = call.deafen(true).await; // solo transmite
-                                call.play_only_input(src.into());
+                                let pista = call.play_only_input(src.into());
                                 tx = Some(Tx { stop, guild: g });
                                 state("transmitiendo", "");
+                                // Si la pista no arranca (codec, formato) songbird no avisa: se revisa a los 2 s.
+                                tokio::spawn(async move {
+                                    tokio::time::sleep(Duration::from_secs(2)).await;
+                                    if let Ok(info) = pista.get_info().await {
+                                        if let songbird::tracks::PlayMode::Errored(e) = info.playing {
+                                            state("error", &format!("el audio no arrancó: {e:?}"));
+                                        }
+                                    }
+                                });
                             }
                             Err(e) => {
                                 let _ = stop.send(());

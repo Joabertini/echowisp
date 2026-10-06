@@ -749,6 +749,7 @@ impl App {
                 if self.br_state == "error" {
                     self.br_err = v["msg"].as_str().unwrap_or("error").to_string();
                     let m = format!("Puente: {}", self.br_err);
+                    engine::log(&m); // la card corta el mensaje; el texto entero queda en engine.log
                     self.flash(&m);
                 }
                 if self.br_state != "transmitiendo" {
