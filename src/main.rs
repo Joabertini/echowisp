@@ -215,7 +215,9 @@ impl Canvas {
     }
 
     /// Recorta la ventana con esquinas redondeadas y premultiplica el alfa. Con cristal, cada pixel tapa
-    /// segun cuanto se aleja del fondo: el fondo deja ver el desenfoque, el texto y las barras quedan nitidos.
+    /// segun cuanto se aleja del fondo (las tarjetas y botones quedan como placas mas firmes que el fondo)
+    /// y alrededor de cada letra, icono o barra se agrega un halo suave del color del tinte: asi el texto
+    /// se lee igual sobre cualquier cosa que haya detras.
     fn finish(&mut self, rad: f32) {
         let (w, h) = (self.w, self.h);
         let t = th();
@@ -223,6 +225,41 @@ impl Canvas {
         let bgp = theme::px(t.bg);
         let (bgr, bgg, bgb) = ((bgp >> 16 & 0xff) as i32, (bgp >> 8 & 0xff) as i32, (bgp & 0xff) as i32);
         let opaque = std::mem::take(&mut self.opaque);
+        // Opacidad por pixel (0..255) antes de recortar las esquinas.
+        let mut fill: Vec<u8> = Vec::new();
+        if glass {
+            let base = (op * 255.0) as u8;
+            fill = vec![base; (w * h) as usize];
+            let px = self.pixels();
+            let mut ink: Vec<usize> = Vec::new(); // pixeles de letras, iconos y barras
+            for (i, &p) in px.iter().enumerate() {
+                let d = ((p >> 16 & 0xff) as i32 - bgr).abs().max(((p >> 8 & 0xff) as i32 - bgg).abs()).max(((p & 0xff) as i32 - bgb).abs());
+                // placas: el relleno de tarjetas (d chico) sube bien por encima del fondo
+                let f = (op + (d as f32 / 255.0 * 9.0 + if d > 6 { 0.12 } else { 0.0 }) * (1.0 - op)).min(1.0);
+                fill[i] = (f * 255.0) as u8;
+                if d > 70 {
+                    ink.push(i);
+                }
+            }
+            // Halo: cada pixel de tinta levanta la opacidad de sus vecinos (1 px fuerte, 2 px suave).
+            let glow = |dx: i32, dy: i32| -> f32 {
+                let r = ((dx * dx + dy * dy) as f32).sqrt();
+                if r <= 1.0 { 0.86 } else if r <= 1.5 { 0.74 } else if r <= 2.0 { 0.55 } else if r <= 2.3 { 0.40 } else { 0.0 }
+            };
+            for &i in &ink {
+                let (x, y) = ((i as i32) % w, (i as i32) / w);
+                for dy in -2..=2i32 {
+                    for dx in -2..=2i32 {
+                        let g = glow(dx, dy);
+                        let (nx, ny) = (x + dx, y + dy);
+                        if g > 0.0 && nx >= 0 && ny >= 0 && nx < w && ny < h {
+                            let j = (ny * w + nx) as usize;
+                            fill[j] = fill[j].max((g * 255.0) as u8);
+                        }
+                    }
+                }
+            }
+        }
         let (cx, cy, hw, hh) = (w as f32 / 2.0, h as f32 / 2.0, w as f32 / 2.0, h as f32 / 2.0);
         let px = self.pixels();
         for y in 0..h {
@@ -233,12 +270,11 @@ impl Canvas {
                 let mut a = (0.5 - ((qx * qx + qy * qy).sqrt() - rad)).clamp(0.0, 1.0);
                 let p = px[i] & 0xffffff;
                 if glass && a > 0.0 {
-                    let d = ((p >> 16 & 0xff) as i32 - bgr).abs().max(((p >> 8 & 0xff) as i32 - bgg).abs()).max(((p & 0xff) as i32 - bgb).abs());
-                    let mut fill = (op + d as f32 / 255.0 * 5.5 * (1.0 - op)).min(1.0);
+                    let mut f = fill[i] as f32 / 255.0;
                     if opaque.iter().any(|&(ox, oy, r)| (x as f32 + 0.5 - ox).powi(2) + (y as f32 + 0.5 - oy).powi(2) <= r * r) {
-                        fill = 1.0;
+                        f = 1.0;
                     }
-                    a *= fill;
+                    a *= f;
                 }
                 px[i] = if a >= 1.0 {
                     p | 0xff00_0000
@@ -1378,9 +1414,23 @@ unsafe fn clipboard() -> String {
     s
 }
 
-unsafe fn font(px: i32, weight: i32, face: &str) -> HFONT {
+/// ClearType asume un fondo opaco; sobre cristal deja bordes de colores y debiles, asi que alli se usa
+/// suavizado en escala de grises.
+unsafe fn font(px: i32, weight: i32, face: &str, glass: bool) -> HFONT {
+    let q = if glass { ANTIALIASED_QUALITY } else { CLEARTYPE_QUALITY };
     CreateFontW(-px, 0, 0, 0, weight, 0, 0, 0, DEFAULT_CHARSET as u32, OUT_DEFAULT_PRECIS as u32,
-        CLIP_DEFAULT_PRECIS as u32, CLEARTYPE_QUALITY as u32, DEFAULT_PITCH as u32, wide(face).as_ptr())
+        CLIP_DEFAULT_PRECIS as u32, q as u32, DEFAULT_PITCH as u32, wide(face).as_ptr())
+}
+
+unsafe fn make_fonts(scale: f32, glass: bool) -> Fonts {
+    let px = |v: i32| (v as f32 * scale).round() as i32;
+    Fonts {
+        title: font(px(14), 600, "Segoe UI", glass),
+        text: font(px(13), 400, "Segoe UI", glass),
+        small: font(px(11), 400, "Segoe UI", glass),
+        icon: font(px(13), 400, "Segoe MDL2 Assets", glass),
+        icon_big: font(px(15), 400, "Segoe MDL2 Assets", glass),
+    }
 }
 
 fn pos_file() -> std::path::PathBuf {
@@ -1665,13 +1715,7 @@ fn main() {
             hwnd,
             eng: engine::start(hwnd as isize),
             scale,
-            f: Fonts {
-                title: font(px(14), 600, "Segoe UI"),
-                text: font(px(13), 400, "Segoe UI"),
-                small: font(px(11), 400, "Segoe UI"),
-                icon: font(px(13), 400, "Segoe MDL2 Assets"),
-                icon_big: font(px(15), 400, "Segoe MDL2 Assets"),
-            },
+            f: make_fonts(scale, th().glass),
             canvas: None,
             dirty: false,
             title: String::new(),

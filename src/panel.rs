@@ -240,7 +240,16 @@ impl App {
         if save {
             t.save();
         }
+        let glass_changed = t.glass != th().glass;
         theme::set(t);
+        if glass_changed {
+            unsafe {
+                let old = std::mem::replace(&mut self.f, make_fonts(self.scale, th().glass));
+                for f in [old.title, old.text, old.small, old.icon, old.icon_big] {
+                    DeleteObject(f);
+                }
+            }
+        }
         self.panel_render();
         self.invalidate();
     }
