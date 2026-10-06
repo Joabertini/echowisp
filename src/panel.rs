@@ -22,7 +22,11 @@ pub enum Panel {
 pub enum PHit {
     None,
     Close,
-    Label(&'static str),
+    Section(usize),
+    Style(bool),
+    Color(u8),
+    Preset(u8, usize),
+    Opacity,
     Msg(&'static str),
     App(usize),
     Sw(usize),
@@ -45,6 +49,18 @@ pub const EDITABLE: &[(i32, &str)] = &[
     (HK_MINI, "Colapsar"),
     (HK_SEARCH, "Buscar"),
 ];
+
+// Paletas rapidas (COLORREF); el campo hex permite cualquier otro color.
+const PRESET_SOLID: [u32; 7] = [rgb(0, 0, 0), rgb(0x0d, 0x0f, 0x14), rgb(0x0b, 0x12, 0x20), rgb(0x1a, 0x0f, 0x14), rgb(0x0c, 0x15, 0x11), rgb(0x1f, 0x1f, 0x22), rgb(0xf4, 0xf1, 0xea)];
+const PRESET_TINT: [u32; 7] = [rgb(0x10, 0x12, 0x1c), rgb(0x1a, 0x10, 0x30), rgb(0x0a, 0x1f, 0x2a), rgb(0x2a, 0x0f, 0x18), rgb(0x10, 0x10, 0x10), rgb(0x1f, 0x1a, 0x10), rgb(0xe8, 0xee, 0xf7)];
+const PRESET_ACCENT: [u32; 7] = [rgb(0x63, 0x66, 0xf1), rgb(0x8b, 0x5c, 0xf6), rgb(0xec, 0x48, 0x99), rgb(0xf9, 0x73, 0x16), rgb(0x22, 0xc5, 0x5e), rgb(0x06, 0xb6, 0xd4), rgb(0xea, 0xb3, 0x08)];
+const SECTIONS: [&str; 6] = ["EN LA CARD", "APARIENCIA", "BOT DE DISCORD", "ENTRADA DEL PUENTE", "NAVEGADOR", "ATAJOS"];
+
+/// Dos colores casi iguales (para marcar un circulo que se confundiria con el fondo).
+fn lum_close(a: u32, b: u32) -> bool {
+    let d = |x: u32, y: u32| ((x & 0xff) as i32 - (y & 0xff) as i32).abs() + (((x >> 8) & 0xff) as i32 - ((y >> 8) & 0xff) as i32).abs() + (((x >> 16) & 0xff) as i32 - ((y >> 16) & 0xff) as i32).abs();
+    d(a, b) < 40
+}
 
 fn ease(t: f32) -> f32 {
     1.0 - (1.0 - t).powi(3)
@@ -122,48 +138,79 @@ impl App {
                 }
             }
             Panel::Config => {
-                let label = |t: &'static str, y: &mut i32, v: &mut Vec<(PHit, RECT)>| {
-                    v.push((PHit::Label(t), RECT { left: 16, top: *y + 6, right: PW - 16, bottom: *y + 24 }));
-                    *y += 26;
+                // Cada seccion es plegable: la cabecera siempre se ve, las filas solo si esta abierta.
+                let head = |i: usize, y: &mut i32, v: &mut Vec<(PHit, RECT)>| {
+                    v.push((PHit::Section(i), RECT { left: 12, top: *y + 2, right: PW - 12, bottom: *y + 26 }));
+                    *y += 28;
                 };
+                let open = |i: usize| self.sec_open[i];
                 if self.br.is_some() || self.dsc_avail {
-                    label("EN LA CARD", &mut y, &mut v);
-                    for (h, ok) in [(PHit::ShowBr, self.br.is_some()), (PHit::ShowDsc, self.dsc_avail)] {
-                        if ok {
-                            row(h, 12, PW - 12, y, y + P_ROW, &mut v);
-                            y += P_ROW;
+                    head(0, &mut y, &mut v);
+                    if open(0) {
+                        for (h, ok) in [(PHit::ShowBr, self.br.is_some()), (PHit::ShowDsc, self.dsc_avail)] {
+                            if ok {
+                                row(h, 12, PW - 12, y, y + P_ROW, &mut v);
+                                y += P_ROW;
+                            }
                         }
                     }
                 }
-                if self.br.is_some() {
-                    label("BOT DE DISCORD", &mut y, &mut v);
-                    row(PHit::Token, 12, PW - 12, y, y + 30, &mut v);
-                    y += 34;
-                    label("ENTRADA DEL PUENTE", &mut y, &mut v);
-                    // Por defecto solo cables virtuales y la elegida: Voicemeeter y microfonos alargan la lista.
-                    let mut hidden = 0;
-                    for (i, d) in self.br_devices.iter().enumerate() {
-                        if self.cfg_all_dev || d.starts_with("CABLE") || *d == self.br_device {
-                            row(PHit::Device(i), 12, PW - 12, y, y + P_ROW, &mut v);
-                            y += P_ROW;
-                        } else {
-                            hidden += 1;
-                        }
-                    }
-                    if hidden > 0 || self.cfg_all_dev {
-                        row(PHit::AllDevices, 12, PW - 12, y, y + P_ROW, &mut v);
+                head(1, &mut y, &mut v);
+                if open(1) {
+                    let t = th();
+                    row(PHit::Style(false), 12, PW / 2 - 1, y, y + P_ROW, &mut v);
+                    row(PHit::Style(true), PW / 2 + 1, PW - 12, y, y + P_ROW, &mut v);
+                    y += P_ROW + 4;
+                    row(PHit::Color(0), 12, PW - 12, y, y + P_ROW, &mut v);
+                    y += P_ROW;
+                    row(PHit::Preset(0, 0), 12, PW - 12, y, y + P_ROW, &mut v);
+                    y += P_ROW;
+                    row(PHit::Color(1), 12, PW - 12, y, y + P_ROW, &mut v);
+                    y += P_ROW;
+                    row(PHit::Preset(1, 0), 12, PW - 12, y, y + P_ROW, &mut v);
+                    y += P_ROW;
+                    if t.glass {
+                        row(PHit::Opacity, 12, PW - 12, y, y + P_ROW, &mut v);
                         y += P_ROW;
                     }
                 }
-                label("NAVEGADOR", &mut y, &mut v);
-                for i in 0..self.browsers.len() {
-                    row(PHit::Browser(i), 12, PW - 12, y, y + P_ROW, &mut v);
-                    y += P_ROW;
+                if self.br.is_some() {
+                    head(2, &mut y, &mut v);
+                    if open(2) {
+                        row(PHit::Token, 12, PW - 12, y, y + 30, &mut v);
+                        y += 34;
+                    }
+                    head(3, &mut y, &mut v);
+                    if open(3) {
+                        // Por defecto solo cables virtuales y la elegida: Voicemeeter y microfonos alargan la lista.
+                        let mut hidden = 0;
+                        for (i, d) in self.br_devices.iter().enumerate() {
+                            if self.cfg_all_dev || d.starts_with("CABLE") || *d == self.br_device {
+                                row(PHit::Device(i), 12, PW - 12, y, y + P_ROW, &mut v);
+                                y += P_ROW;
+                            } else {
+                                hidden += 1;
+                            }
+                        }
+                        if hidden > 0 || self.cfg_all_dev {
+                            row(PHit::AllDevices, 12, PW - 12, y, y + P_ROW, &mut v);
+                            y += P_ROW;
+                        }
+                    }
                 }
-                label("ATAJOS", &mut y, &mut v);
-                for i in 0..EDITABLE.len() {
-                    row(PHit::Hotkey(i), 12, PW - 12, y, y + P_ROW, &mut v);
-                    y += P_ROW;
+                head(4, &mut y, &mut v);
+                if open(4) {
+                    for i in 0..self.browsers.len() {
+                        row(PHit::Browser(i), 12, PW - 12, y, y + P_ROW, &mut v);
+                        y += P_ROW;
+                    }
+                }
+                head(5, &mut y, &mut v);
+                if open(5) {
+                    for i in 0..EDITABLE.len() {
+                        row(PHit::Hotkey(i), 12, PW - 12, y, y + P_ROW, &mut v);
+                        y += P_ROW;
+                    }
                 }
             }
             Panel::None => {}
@@ -173,6 +220,83 @@ impl App {
 
     fn pr(&self, r: RECT) -> RECT {
         self.r(r.left, r.top, r.right, r.bottom)
+    }
+
+    fn presets(&self, which: u8) -> &'static [u32; 7] {
+        match (which, th().glass) {
+            (1, _) => &PRESET_ACCENT,
+            (_, true) => &PRESET_TINT,
+            _ => &PRESET_SOLID,
+        }
+    }
+
+    /// Centro (px logicos, desde el borde izquierdo de la fila) del circulo i de una paleta.
+    fn preset_x(&self, i: usize) -> i32 {
+        26 + i as i32 * (PW - 24 - 52) / 6
+    }
+
+    /// Cambia el tema, lo guarda y repinta las dos cards.
+    fn theme_apply(&mut self, t: theme::Theme, save: bool) {
+        if save {
+            t.save();
+        }
+        theme::set(t);
+        self.panel_render();
+        self.invalidate();
+    }
+
+    fn theme_edit(&self) -> theme::Theme {
+        th().clone()
+    }
+
+    /// Color elegido (0 fondo/tinte, 1 acento) en el tema `t`.
+    fn theme_set_color(t: &mut theme::Theme, which: u8, c: u32) {
+        match which {
+            0 if t.glass => t.glass_tint = c,
+            0 => t.solid_bg = c,
+            _ => t.accent = c,
+        }
+        t.derive();
+    }
+
+    fn opacity_from_x(&mut self, x: i32, save: bool) {
+        let Some(&(_, r)) = self.panel_layout().0.iter().find(|(h, _)| *h == PHit::Opacity) else { return };
+        let (l, rr) = (self.px(r.left + 94), self.px(r.right - 38));
+        let f = ((x + self.panel_sx - l) as f32 / (rr - l) as f32).clamp(0.0, 1.0);
+        let mut t = self.theme_edit();
+        t.opacity = theme::OPACITY_MIN + f * (theme::OPACITY_MAX - theme::OPACITY_MIN);
+        t.derive();
+        self.theme_apply(t, save);
+    }
+
+    /// Caracter tecleado mientras se edita un color hex. Enter confirma, Esc deja el color de antes.
+    pub fn panel_char(&mut self, c: u16) {
+        let Some((which, mut buf, orig)) = self.panel_edit.take() else { return };
+        let mut done = false;
+        match c {
+            13 => done = true,
+            27 => {
+                let mut t = self.theme_edit();
+                Self::theme_set_color(&mut t, which, orig);
+                self.theme_apply(t, true);
+                self.panel_render();
+                return;
+            }
+            8 => {
+                buf.pop();
+            }
+            22 => buf = unsafe { clipboard() }.chars().filter(|c| c.is_ascii_hexdigit()).take(6).collect(),
+            c if (c as u8 as char).is_ascii_hexdigit() && c < 128 && buf.len() < 6 => buf.push(c as u8 as char),
+            _ => {}
+        }
+        // Con 3 o 6 digitos validos se ve en vivo.
+        if let Some(col) = theme::parse_hex(&buf).filter(|_| buf.len() == 3 || buf.len() == 6) {
+            let mut t = self.theme_edit();
+            Self::theme_set_color(&mut t, which, col);
+            self.theme_apply(t, done);
+        }
+        self.panel_edit = if done { None } else { Some((which, buf, orig)) };
+        self.panel_render();
     }
 
     pub fn panel_open(&mut self, p: Panel) {
@@ -272,6 +396,9 @@ impl App {
             let src = POINT { x: self.panel_sx, y: 0 };
             let blend = BLENDFUNCTION { BlendOp: AC_SRC_OVER as u8, BlendFlags: 0, SourceConstantAlpha: 255, AlphaFormat: AC_SRC_ALPHA as u8 };
             UpdateLayeredWindow(self.panel_hwnd, null_mut(), &dst, &size, cv.dc, &src, 0, &blend, ULW_ALPHA);
+            let mut c = self.blur_panel;
+            theme::blur(self.panel_hwnd, &mut c, vw, pw, -self.panel_sx, cv.h, (RADIUS * self.scale).round() as i32);
+            self.blur_panel = c;
             if IsWindowVisible(self.panel_hwnd) == 0 {
                 ShowWindow(self.panel_hwnd, SW_SHOWNOACTIVATE);
             }
@@ -291,14 +418,14 @@ impl App {
                 self.panel_canvas = Some(Canvas::new(w, h));
             }
             let mut cv = self.panel_canvas.take().unwrap();
-            cv.pixels().fill(BG);
+            cv.fill_bg();
             let (wf, hf, s) = (w as f32, h as f32, self.scale);
-            cv.round(0.0, 0.0, wf, hf, RADIUS * s, HAIRLINE);
-            cv.round(1.0, 1.0, wf - 1.0, hf - 1.0, RADIUS * s - 1.0, BG);
+            cv.round(0.0, 0.0, wf, hf, RADIUS * s, th().hairline);
+            cv.round(1.0, 1.0, wf - 1.0, hf - 1.0, RADIUS * s - 1.0, th().bg);
             let hov = self.panel_hover;
             if hov == PHit::Close {
                 let z = self.r(PW - 36, 4, PW - 8, 32);
-                cv.round(z.left as f32, z.top as f32, z.right as f32, z.bottom as f32, self.pf(14.0), TAB);
+                cv.round(z.left as f32, z.top as f32, z.right as f32, z.bottom as f32, self.pf(14.0), th().tab);
             }
             // Formas
             for &(hit, r) in &rows {
@@ -307,33 +434,72 @@ impl App {
                 match hit {
                     PHit::Sw(i) => {
                         let on = self.mix_apps[i].on;
-                        cv.round(l, t, rr, b, (b - t) / 2.0, if on { GREEN } else { HOVER });
+                        cv.round(l, t, rr, b, (b - t) / 2.0, if on { GREEN } else { th().hover });
                         let k = (b - t) / 2.0 - self.pf(2.5);
-                        cv.dot(if on { rr - (b - t) / 2.0 } else { l + (b - t) / 2.0 }, (t + b) / 2.0, k, INK);
+                        cv.dot(if on { rr - (b - t) / 2.0 } else { l + (b - t) / 2.0 }, (t + b) / 2.0, k, th().ink);
                     }
                     PHit::Vol(i) => {
                         let y = (t + b) / 2.0;
-                        cv.round(l, y - self.pf(2.0), rr, y + self.pf(2.0), self.pf(2.0), HOVER);
+                        cv.round(l, y - self.pf(2.0), rr, y + self.pf(2.0), self.pf(2.0), th().hover);
                         let x = l + (rr - l) * (self.mix_apps[i].vol / 100.0) as f32;
                         if x - l > 1.0 {
-                            cv.round(l, y - self.pf(2.0), x, y + self.pf(2.0), self.pf(2.0), INDIGO);
+                            cv.round(l, y - self.pf(2.0), x, y + self.pf(2.0), self.pf(2.0), th().accent);
                         }
-                        cv.dot(x, y, self.pf(5.0), INK);
+                        cv.dot(x, y, self.pf(5.0), th().ink);
                     }
-                    PHit::Token => cv.round(l, t, rr, b, self.pf(10.0), if hov == hit { INDIGO } else { TAB }),
+                    PHit::Section(_) => {
+                        if hov == hit {
+                            cv.round(l, t, rr, b, self.pf(8.0), th().hover);
+                        }
+                    }
+                    PHit::Style(g) => cv.round(l, t, rr, b, self.pf(9.0), if th().glass == g { th().accent } else if hov == hit { th().hover } else { th().tab }),
+                    PHit::Color(w) => {
+                        if hov == hit || self.panel_edit.as_ref().is_some_and(|e| e.0 == w) {
+                            cv.round(l, t, rr, b, self.pf(8.0), th().hover);
+                        }
+                        let c = if w == 0 { th().base() } else { th().accent };
+                        let (cx, cy) = (rr - self.pf(16.0), (t + b) / 2.0);
+                        cv.dot(cx, cy, self.pf(8.5), th().dim3);
+                        cv.dot(cx, cy, self.pf(7.0), c);
+                    }
+                    PHit::Preset(w, _) => {
+                        let cur = if w == 0 { th().base() } else { th().accent };
+                        for (i, c) in self.presets(w).iter().enumerate() {
+                            let cx = l + self.pf(self.preset_x(i) as f32 - 12.0);
+                            let cy = (t + b) / 2.0;
+                            if *c == cur {
+                                cv.dot(cx, cy, self.pf(9.5), th().ink);
+                                cv.dot(cx, cy, self.pf(8.0), th().bg);
+                            }
+                            cv.dot(cx, cy, self.pf(6.5), *c);
+                            if lum_close(*c, th().bg) {
+                                cv.dot(cx, cy, self.pf(6.5), th().dim3);
+                                cv.dot(cx, cy, self.pf(5.5), *c);
+                            }
+                        }
+                    }
+                    PHit::Opacity => {
+                        let (tl, tr, y) = (l + self.pf(82.0), rr - self.pf(38.0), (t + b) / 2.0);
+                        cv.round(tl, y - self.pf(2.0), tr, y + self.pf(2.0), self.pf(2.0), th().hover);
+                        let f = (th().opacity - theme::OPACITY_MIN) / (theme::OPACITY_MAX - theme::OPACITY_MIN);
+                        let x = tl + (tr - tl) * f;
+                        cv.round(tl, y - self.pf(2.0), x, y + self.pf(2.0), self.pf(2.0), th().accent);
+                        cv.dot(x, y, self.pf(5.0), th().ink);
+                    }
+                    PHit::Token => cv.round(l, t, rr, b, self.pf(10.0), if hov == hit { th().accent } else { th().tab }),
                     PHit::ShowBr | PHit::ShowDsc => {
                         if hov == hit {
-                            cv.round(l, t, rr, b, self.pf(8.0), HOVER);
+                            cv.round(l, t, rr, b, self.pf(8.0), th().hover);
                         }
                         let on = if hit == PHit::ShowBr { self.show_br } else { self.show_dsc };
                         let (sl, st, sr, sb) = (rr - self.pf(42.0), t + self.pf(5.0), rr - self.pf(4.0), b - self.pf(5.0));
-                        cv.round(sl, st, sr, sb, (sb - st) / 2.0, if on { GREEN } else { HOVER });
+                        cv.round(sl, st, sr, sb, (sb - st) / 2.0, if on { GREEN } else { th().hover });
                         let k = (sb - st) / 2.0 - self.pf(2.5);
-                        cv.dot(if on { sr - (sb - st) / 2.0 } else { sl + (sb - st) / 2.0 }, (st + sb) / 2.0, k, INK);
+                        cv.dot(if on { sr - (sb - st) / 2.0 } else { sl + (sb - st) / 2.0 }, (st + sb) / 2.0, k, th().ink);
                     }
                     PHit::App(_) | PHit::Device(_) | PHit::AllDevices | PHit::Browser(_) | PHit::Hotkey(_) => {
                         if hov == hit || self.panel_capture.is_some_and(|c| hit == PHit::Hotkey(c)) {
-                            cv.round(l, t, rr, b, self.pf(8.0), HOVER);
+                            cv.round(l, t, rr, b, self.pf(8.0), th().hover);
                         }
                         let sel = match hit {
                             PHit::Device(i) => Some(self.br_devices[i] == self.br_device),
@@ -342,9 +508,9 @@ impl App {
                         };
                         if let Some(sel) = sel {
                             let (cx, cy) = (l + self.pf(14.0), (t + b) / 2.0);
-                            cv.dot(cx, cy, self.pf(5.0), if sel { INDIGO } else { HOVER });
+                            cv.dot(cx, cy, self.pf(5.0), if sel { th().accent } else { th().hover });
                             if sel {
-                                cv.dot(cx, cy, self.pf(2.0), INK);
+                                cv.dot(cx, cy, self.pf(2.0), th().ink);
                             }
                         }
                     }
@@ -354,40 +520,63 @@ impl App {
             GdiFlush();
             // Texto
             let title = if self.panel == Panel::Apps { "Apps a Discord" } else { "Configuración" };
-            cv.text(self.f.title, title, self.r(16, 8, PW - 40, 32), INK, DT_LEFT);
-            cv.text(self.f.icon, "\u{E8BB}", self.r(PW - 36, 4, PW - 8, 32), if hov == PHit::Close { INK } else { DIM }, DT_CENTER);
+            cv.text(self.f.title, title, self.r(16, 8, PW - 40, 32), th().ink, DT_LEFT);
+            cv.text(self.f.icon, "\u{E8BB}", self.r(PW - 36, 4, PW - 8, 32), if hov == PHit::Close { th().ink } else { th().dim }, DT_CENTER);
             for &(hit, r) in &rows {
                 let z = self.pr(r);
                 let inset = RECT { left: z.left + self.px(30), right: z.right - self.px(8), ..z };
                 match hit {
-                    PHit::Label(t) => cv.text(self.f.small, t, z, DIM3, DT_LEFT),
-                    PHit::Msg(t) => cv.text(self.f.small, t, z, DIM, DT_CENTER),
+                    PHit::Section(i) => {
+                        cv.text(self.f.small, SECTIONS[i], RECT { left: z.left + self.px(4), ..z }, th().dim3, DT_LEFT);
+                        let ch = if self.sec_open[i] { "\u{E70E}" } else { "\u{E70D}" };
+                        cv.text(self.f.icon, ch, RECT { left: z.right - self.px(24), ..z }, th().dim3, DT_CENTER);
+                    }
+                    PHit::Style(g) => {
+                        let on = th().glass == g;
+                        cv.text(self.f.small, if g { "Cristal" } else { "Sólido" }, z, if on { theme::on(th().accent) } else { th().dim }, DT_CENTER);
+                    }
+                    PHit::Color(w) => {
+                        let name = if w == 1 { "Acento" } else if th().glass { "Tinte" } else { "Fondo" };
+                        cv.text(self.f.small, name, RECT { left: z.left + self.px(10), ..z }, th().ink, DT_LEFT);
+                        let val = match &self.panel_edit {
+                            Some((e, buf, _)) if *e == w => format!("#{buf}_"),
+                            _ => theme::hex(if w == 0 { th().base() } else { th().accent }),
+                        };
+                        let c = if self.panel_edit.as_ref().is_some_and(|e| e.0 == w) { AMBER } else { th().dim };
+                        cv.text(self.f.small, &val, RECT { right: z.right - self.px(32), ..z }, c, DT_RIGHT);
+                    }
+                    PHit::Opacity => {
+                        cv.text(self.f.small, "Opacidad", RECT { left: z.left + self.px(10), ..z }, th().ink, DT_LEFT);
+                        let v = format!("{}%", (th().opacity * 100.0).round() as i32);
+                        cv.text(self.f.small, &v, RECT { left: z.right - self.px(36), ..z }, th().dim, DT_CENTER);
+                    }
+                    PHit::Msg(t) => cv.text(self.f.small, t, z, th().dim, DT_CENTER),
                     PHit::App(i) => {
                         let a = &self.mix_apps[i];
-                        cv.text(self.f.small, &a.name, RECT { left: z.left + self.px(10), ..z }, if a.on { INK } else { DIM }, DT_LEFT);
+                        cv.text(self.f.small, &a.name, RECT { left: z.left + self.px(10), ..z }, if a.on { th().ink } else { th().dim }, DT_LEFT);
                     }
                     PHit::Vol(i) => {
                         let v = format!("{}", self.mix_apps[i].vol as i32);
-                        cv.text(self.f.small, &v, RECT { left: z.right + self.px(6), right: z.right + self.px(40), top: z.top - self.px(6), bottom: z.bottom + self.px(6) }, DIM, DT_CENTER);
+                        cv.text(self.f.small, &v, RECT { left: z.right + self.px(6), right: z.right + self.px(40), top: z.top - self.px(6), bottom: z.bottom + self.px(6) }, th().dim, DT_CENTER);
                     }
-                    PHit::ShowBr => cv.text(self.f.small, "Puente a Discord", RECT { left: z.left + self.px(10), ..z }, INK, DT_LEFT),
-                    PHit::ShowDsc => cv.text(self.f.small, "Ventana de Discord", RECT { left: z.left + self.px(10), ..z }, INK, DT_LEFT),
+                    PHit::ShowBr => cv.text(self.f.small, "Puente a Discord", RECT { left: z.left + self.px(10), ..z }, th().ink, DT_LEFT),
+                    PHit::ShowDsc => cv.text(self.f.small, "Ventana de Discord", RECT { left: z.left + self.px(10), ..z }, th().ink, DT_LEFT),
                     PHit::Token => {
                         let t = if self.br_has_token { "Token guardado · pegar otro" } else { "Pegar token del bot (copialo y tocá)" };
-                        cv.text(self.f.small, t, z, INK, DT_CENTER);
+                        cv.text(self.f.small, t, z, th().ink, DT_CENTER);
                     }
-                    PHit::Device(i) => cv.text(self.f.small, short_dev(&self.br_devices[i]), inset, INK, DT_LEFT),
-                    PHit::AllDevices => cv.text(self.f.small, if self.cfg_all_dev { "Mostrar solo cables" } else { "Mostrar todas las entradas" }, inset, DIM, DT_LEFT),
-                    PHit::Browser(i) => cv.text(self.f.small, &self.browsers[i].0, inset, INK, DT_LEFT),
+                    PHit::Device(i) => cv.text(self.f.small, short_dev(&self.br_devices[i]), inset, th().ink, DT_LEFT),
+                    PHit::AllDevices => cv.text(self.f.small, if self.cfg_all_dev { "Mostrar solo cables" } else { "Mostrar todas las entradas" }, inset, th().dim, DT_LEFT),
+                    PHit::Browser(i) => cv.text(self.f.small, &self.browsers[i].0, inset, th().ink, DT_LEFT),
                     PHit::Hotkey(i) => {
                         let (id, name) = EDITABLE[i];
-                        cv.text(self.f.small, name, RECT { left: z.left + self.px(10), ..z }, INK, DT_LEFT);
+                        cv.text(self.f.small, name, RECT { left: z.left + self.px(10), ..z }, th().ink, DT_LEFT);
                         let combo = if self.panel_capture == Some(i) {
                             "presioná la combinación…".to_string()
                         } else {
                             self.hotkeys.iter().find(|h| h.0 == id).map(|h| key_name(h.1, h.2)).unwrap_or_default()
                         };
-                        let c = if self.panel_capture == Some(i) { AMBER } else { DIM };
+                        let c = if self.panel_capture == Some(i) { AMBER } else { th().dim };
                         cv.text(self.f.small, &combo, RECT { right: z.right - self.px(10), ..z }, c, DT_RIGHT);
                     }
                     _ => {}
@@ -410,7 +599,7 @@ impl App {
         self.panel_layout()
             .0
             .into_iter()
-            .find(|&(h, r)| !matches!(h, PHit::Label(_) | PHit::Msg(_)) && inside(self.pr(r)))
+            .find(|&(h, r)| !matches!(h, PHit::Msg(_)) && inside(self.pr(r)))
             .map_or(PHit::None, |(h, _)| h)
     }
 
@@ -441,6 +630,41 @@ impl App {
                 }
                 let _ = std::fs::write(card_file(), json!({ "puente": self.show_br, "discord": self.show_dsc }).to_string());
                 self.invalidate(); // la card cambia de alto; la de costado la sigue
+            }
+            PHit::Section(i) => self.sec_open[i] = !self.sec_open[i],
+            PHit::Style(g) => {
+                if th().glass != g {
+                    let mut t = self.theme_edit();
+                    t.glass = g;
+                    t.derive();
+                    self.theme_apply(t, true);
+                }
+            }
+            PHit::Color(w) => {
+                if self.panel_edit.as_ref().is_some_and(|e| e.0 == w) {
+                    self.panel_edit = None;
+                } else {
+                    let cur = if w == 0 { th().base() } else { th().accent };
+                    self.panel_edit = Some((w, String::new(), cur));
+                    // Para recibir el teclado, la card de costado toma el foco hasta confirmar.
+                    unsafe { SetForegroundWindow(self.panel_hwnd) };
+                }
+            }
+            PHit::Preset(w, _) => {
+                let rows = self.panel_layout().0;
+                if let Some(&(_, r)) = rows.iter().find(|(h, _)| matches!(h, PHit::Preset(k, _) if *k == w)) {
+                    let rel = x + self.panel_sx - self.px(r.left);
+                    let i = (0..7).min_by_key(|&i| (rel - self.px(self.preset_x(i) - 12)).abs()).unwrap_or(0);
+                    let c = self.presets(w)[i];
+                    let mut t = self.theme_edit();
+                    Self::theme_set_color(&mut t, w, c);
+                    self.theme_apply(t, true);
+                }
+            }
+            PHit::Opacity => {
+                self.op_drag = true;
+                unsafe { SetCapture(self.panel_hwnd) };
+                self.opacity_from_x(x, false);
             }
             PHit::Token => self.br_paste_token(),
             PHit::AllDevices => self.cfg_all_dev = !self.cfg_all_dev,
@@ -547,11 +771,24 @@ pub unsafe extern "system" fn panel_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: L
             if a.mix_drag.take().is_some() {
                 ReleaseCapture();
             }
+            if a.op_drag {
+                a.op_drag = false;
+                ReleaseCapture();
+                th().save();
+            }
+            0
+        }
+        WM_CHAR => {
+            a.panel_char(wp as u16);
             0
         }
         WM_MOUSEMOVE => {
             if let Some(i) = a.mix_drag {
                 a.mix_vol_from_x(i, mx);
+                return 0;
+            }
+            if a.op_drag {
+                a.opacity_from_x(mx, false);
                 return 0;
             }
             if !a.panel_tracking {
@@ -590,7 +827,9 @@ pub unsafe extern "system" fn panel_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: L
             }
         }
         WM_KILLFOCUS => {
-            if a.panel_capture.take().is_some() {
+            let ended = a.panel_capture.take().is_some() | a.panel_edit.take().is_some();
+            if ended {
+                th().save();
                 a.panel_render();
             }
             0
