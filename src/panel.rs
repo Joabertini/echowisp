@@ -30,6 +30,7 @@ pub enum PHit {
     Sw(usize),
     Vol(usize),
     ShowBr,
+    Invite,
     ShowDsc,
     Token,
     Device(usize),
@@ -168,6 +169,10 @@ impl App {
                     if open(2) {
                         row(PHit::Token, 12, PW - 12, y, y + 30, &mut v);
                         y += 34;
+                        if self.br_has_token {
+                            row(PHit::Invite, 12, PW - 12, y, y + 30, &mut v);
+                            y += 34;
+                        }
                     }
                     head(3, &mut y, &mut v);
                     if open(3) {
@@ -451,7 +456,7 @@ impl App {
                             }
                         }
                     }
-                    PHit::Token => cv.round(l, t, rr, b, self.pf(10.0), if hov == hit { th().accent } else { th().tab }),
+                    PHit::Token | PHit::Invite => cv.round(l, t, rr, b, self.pf(10.0), if hov == hit { th().accent } else { th().tab }),
                     PHit::ShowBr | PHit::ShowDsc => {
                         if hov == hit {
                             cv.round(l, t, rr, b, self.pf(8.0), th().hover);
@@ -521,6 +526,7 @@ impl App {
                         let t = if self.br_has_token { "Token guardado · pegar otro" } else { "Pegar token del bot (copialo y tocá)" };
                         cv.text(self.f.small, t, z, th().ink, DT_CENTER);
                     }
+                    PHit::Invite => cv.text(self.f.small, "Invitar el bot a un servidor", z, th().ink, DT_CENTER),
                     PHit::Device(i) => cv.text(self.f.small, short_dev(&self.br_devices[i]), inset, th().ink, DT_LEFT),
                     PHit::AllDevices => cv.text(self.f.small, if self.cfg_all_dev { "Mostrar solo cables" } else { "Mostrar todas las entradas" }, inset, th().dim, DT_LEFT),
                     PHit::Browser(i) => cv.text(self.f.small, &self.browsers[i].0, inset, th().ink, DT_LEFT),
@@ -610,6 +616,10 @@ impl App {
                 }
             }
             PHit::Token => self.br_paste_token(),
+            PHit::Invite => {
+                self.mix_send(json!({ "cmd": "invite" }));
+                self.flash("Abriendo la invitación en el navegador");
+            }
             PHit::AllDevices => self.cfg_all_dev = !self.cfg_all_dev,
             PHit::Device(i) => {
                 self.br_device = self.br_devices[i].clone();

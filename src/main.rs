@@ -637,7 +637,7 @@ impl App {
             .map(|(g, id, n)| it(n, if many { g.name.clone() } else { String::new() }, &format!("{}:{id}", g.id)))
             .collect();
         if items.is_empty() {
-            self.flash(if self.br_guilds.is_empty() { "El bot no está en ningún servidor (o sigue conectando)" } else { "El servidor no tiene canales de voz" });
+            self.flash(if self.br_guilds.is_empty() { "Bot sin servidor: invitalo desde ⚙" } else { "El servidor no tiene canales de voz" });
             return;
         }
         self.clear_search();
@@ -753,6 +753,12 @@ impl App {
                 }
                 if self.br_state != "transmitiendo" {
                     self.br_level = 0.0;
+                }
+            }
+            Some("invite") => {
+                // Pagina de Discord para agregar el bot: se abre en el navegador elegido (perfil de siempre).
+                if let (Some(url), Some(exe)) = (v["url"].as_str(), brave::find_brave()) {
+                    let _ = std::process::Command::new(exe).arg(url).spawn();
                 }
             }
             Some("level") => self.br_level = v["v"].as_f64().unwrap_or(0.0) as f32,
@@ -1274,6 +1280,7 @@ impl App {
                     ("transmitiendo", Some(c)) => format!("{c} · al aire"),
                     ("entrando", Some(c)) => format!("Entrando a {c}…"),
                     ("conectando", _) => "Puente · conectando…".into(),
+                    ("listo", None) if self.br_guilds.is_empty() => "Invitá el bot al servidor".into(),
                     ("error", _) => format!("Puente · {}", self.br_err),
                     (_, Some(c)) => c,
                     _ => "Puente · elegí canal".into(),

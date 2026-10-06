@@ -1,5 +1,5 @@
 // Modo `serve`: la card lanza el puente como hijo y hablan por lineas JSON.
-//   card → puente: {"cmd":"token","token":"…"} · {"cmd":"join","guild":"…","channel":"…","device":"…"} · {"cmd":"leave"}
+//   card → puente: {"cmd":"invite"} · {"cmd":"token","token":"…"} · {"cmd":"join","guild":"…","channel":"…","device":"…"} · {"cmd":"leave"}
 //   puente → card: {"ev":"devices","list":[…]} · {"ev":"config",…} · {"ev":"guilds","list":[…]}
 //                  {"ev":"state","s":"…","msg":"…"} · {"ev":"level","v":0.0}
 //   mezclador (mixer.rs): {"cmd":"apps"|"route"|"vol"} → {"ev":"apps",…} · {"ev":"mix_error","msg":"…"}
@@ -199,6 +199,13 @@ pub async fn serve() {
                         if let Some((sb, h)) = connect(t, guilds.clone()) {
                             songbird = Some(sb);
                             gateway = Some(h);
+                        }
+                    }
+                    Some("invite") => {
+                        // Link para agregar el bot a un servidor: ver canales, conectarse y hablar.
+                        if let Some(id) = cfg["token"].as_str().and_then(crate::bot_id) {
+                            emit(json!({ "ev": "invite", "url": format!(
+                                "https://discord.com/oauth2/authorize?client_id={id}&scope=bot&permissions=3146752") }));
                         }
                     }
                     Some("join") => {
