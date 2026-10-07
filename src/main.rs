@@ -6,6 +6,7 @@ mod bridge;
 mod cdp;
 mod engine;
 mod panel;
+mod report;
 mod theme;
 
 use engine::{Engine, Ev, WM_ENGINE};
@@ -252,6 +253,31 @@ impl Canvas {
         SelectObject(self.dc, old);
     }
 
+    /// Texto de varias lineas alineado a la izquierda dentro de `r`. Si no entra se ve el final (lo ultimo
+    /// que se escribio), como en un campo de texto.
+    unsafe fn text_box(&self, f: HFONT, s: &str, r: RECT, c: u32) {
+        if s.is_empty() {
+            return;
+        }
+        let w: Vec<u16> = s.encode_utf16().collect();
+        let old = SelectObject(self.dc, f);
+        SetTextColor(self.dc, c);
+        let fmt = DT_LEFT | DT_WORDBREAK | DT_EDITCONTROL | DT_NOPREFIX;
+        let mut m = r;
+        DrawTextW(self.dc, w.as_ptr(), w.len() as i32, &mut m, fmt | DT_CALCRECT);
+        let over = (m.bottom - m.top) - (r.bottom - r.top);
+        let save = SaveDC(self.dc);
+        IntersectClipRect(self.dc, r.left, r.top, r.right, r.bottom);
+        let mut out = r;
+        if over > 0 {
+            out.top -= over;
+        }
+        out.bottom = out.top + (m.bottom - m.top);
+        DrawTextW(self.dc, w.as_ptr(), w.len() as i32, &mut out, fmt);
+        RestoreDC(self.dc, save);
+        SelectObject(self.dc, old);
+    }
+
     /// Texto centrado que puede partirse en dos lineas.
     unsafe fn text_wrap(&self, f: HFONT, s: &str, r: RECT, c: u32) {
         let w: Vec<u16> = s.encode_utf16().collect();
@@ -376,6 +402,7 @@ struct App {
     sec_open: [bool; 6],
     show_br: bool,     // filas del puente y de Discord a la vista (card.json)
     show_dsc: bool,
+    rep: report::Form, // "Reportar un problema" (panel.rs)
 }
 
 static mut APP: *mut App = null_mut();
@@ -1612,6 +1639,11 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
             a.on_engine(*ev);
             0
         }
+        report::WM_REPORT => {
+            let err = Box::from_raw(lp as *mut String);
+            a.report_done(wp == 1, *err);
+            0
+        }
         // La card de costado sigue a la principal.
         WM_WINDOWPOSCHANGED => {
             a.panel_present();
@@ -1742,6 +1774,7 @@ fn main() {
             sec_open: [true, true, true, false, false, false],
             show_br: panel::card_pref("puente"),
             show_dsc: panel::card_pref("discord"),
+            rep: report::Form::new(),
         });
         APP = Box::into_raw(a);
         app().br = bridge::Bridge::start(hwnd as isize); // modulo opcional

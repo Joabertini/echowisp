@@ -19,6 +19,9 @@ Funciona con el Brave del usuario cerrado. Prioridad: recursos mínimos y fluide
 - `src/page.js` — corre en music.youtube.com: API interna (`/youtubei/v1/search|browse`), play por
   evento `yt-navigate` (sin recargar, ~250 ms; plan B recarga), controles por clic en la barra del
   reproductor, estado por `navigator.mediaSession` + `repeat-mode` del `ytmusic-player-bar`.
+- `src/report.rs` — "Reportar un problema" (al pie de Configuración): texto + mail opcional + datos
+  técnicos opcionales (Windows y final de `engine.log` sin la carpeta del usuario). POST por WinHTTP a
+  `reportes.bertinilabs.xyz/v1/reporte` en un hilo; vuelve como `WM_REPORT`. El servidor guarda y reenvía.
 
 ## Decisiones (con motivo)
 - **No reproducir el audio en nativo** (opción C): YouTube corta la descarga sin token PoToken; el
