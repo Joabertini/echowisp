@@ -33,34 +33,15 @@ fn profile_dir() -> PathBuf {
 }
 
 pub fn find_brave() -> Option<PathBuf> {
-    // Navegador elegido en el instalador (Brave, Brave Origin portatil u otro Chromium).
+    // Navegador elegido en el instalador; si no esta, Brave y si no, Edge (viene con Windows). Los anuncios los
+    // saca page.js, asi que cualquier Chromium sirve. Brave Origin portatil (versiones viejas) se ignora: en
+    // Windows es pago y abre una ventana de compra.
     let dir = std::env::current_exe().ok()?.parent()?.to_path_buf();
-    if let Some(p) = std::fs::read_to_string(dir.join("navegador.txt")).ok().map(|s| PathBuf::from(s.trim())).filter(|p| p.exists()) {
+    let origin = dir.join("brave").join("brave.exe");
+    if let Some(p) = std::fs::read_to_string(dir.join("navegador.txt")).ok().map(|s| PathBuf::from(s.trim())).filter(|p| p.exists() && *p != origin) {
         return Some(p);
     }
-    if let Some(p) = Some(dir.join("brave").join("brave.exe")).filter(|p| p.exists()) {
-        return Some(p);
-    }
-    let sub = wide(r"SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths\brave.exe");
-    for root in [HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE] {
-        let mut buf = [0u16; 1024];
-        let mut len = (buf.len() * 2) as u32;
-        let r = unsafe {
-            RegGetValueW(root, sub.as_ptr(), null(), RRF_RT_REG_SZ, null_mut(), buf.as_mut_ptr().cast(), &mut len)
-        };
-        if r == 0 {
-            let n = (len as usize / 2).saturating_sub(1);
-            let p = PathBuf::from(String::from_utf16_lossy(&buf[..n]).trim_matches('"'));
-            if p.exists() {
-                return Some(p);
-            }
-        }
-    }
-    ["ProgramFiles", "ProgramFiles(x86)", "LOCALAPPDATA"]
-        .iter()
-        .filter_map(|v| std::env::var(v).ok())
-        .map(|d| PathBuf::from(d).join(r"BraveSoftware\Brave-Browser\Application\brave.exe"))
-        .find(|p| p.exists())
+    browsers().into_iter().map(|(_, p)| p).next()
 }
 
 /// Ruta en App Paths (usuario o equipo), si existe.
@@ -81,17 +62,14 @@ fn app_path(exe: &str) -> Option<PathBuf> {
     None
 }
 
-/// Navegadores Chromium instalados (los mismos que ofrece el instalador), para la configuracion.
+/// Navegadores Chromium instalados, en orden de preferencia (los mismos que ofrece el instalador).
 pub fn browsers() -> Vec<(String, PathBuf)> {
     let mut v: Vec<(String, PathBuf)> = Vec::new();
-    if let Some(p) = std::env::current_exe().ok().and_then(|e| Some(e.parent()?.join("brave").join("brave.exe"))).filter(|p| p.exists()) {
-        v.push(("Brave Origin (portátil)".into(), p));
-    }
     for (name, exe, sub) in [
         ("Brave", "brave.exe", r"BraveSoftware\Brave-Browser\Application\brave.exe"),
-        ("Google Chrome · sin Shields", "chrome.exe", r"Google\Chrome\Application\chrome.exe"),
-        ("Microsoft Edge · sin Shields", "msedge.exe", r"Microsoft\Edge\Application\msedge.exe"),
-        ("Vivaldi · sin Shields", "vivaldi.exe", r"Vivaldi\Application\vivaldi.exe"),
+        ("Microsoft Edge", "msedge.exe", r"Microsoft\Edge\Application\msedge.exe"),
+        ("Google Chrome", "chrome.exe", r"Google\Chrome\Application\chrome.exe"),
+        ("Vivaldi", "vivaldi.exe", r"Vivaldi\Application\vivaldi.exe"),
     ] {
         let found = app_path(exe).or_else(|| {
             ["LOCALAPPDATA", "ProgramFiles", "ProgramFiles(x86)"]

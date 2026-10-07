@@ -37,6 +37,64 @@
   const col = (i, n) => txt(i.flexColumns?.[n]?.musicResponsiveListItemFlexColumnRenderer?.text);
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
+  // ---- Anuncios: propio, no depende de los Shields del navegador ----
+  // 1) Se borran los anuncios de cada respuesta del reproductor antes de que YTM la lea (misma tecnica que
+  //    uBlock/Brave: json-prune). 2) Si igual aparece uno, se silencia, se salta al final y se toca "Omitir".
+  const AD_KEYS = ['adPlacements', 'playerAds', 'adSlots', 'adBreakHeartbeatParams'];
+  const prune = (o) => {
+    if (o && typeof o === 'object') {
+      for (const k of AD_KEYS) if (k in o) delete o[k];
+      if (o.playerResponse) prune(o.playerResponse);
+    }
+    return o;
+  };
+  const parse = JSON.parse;
+  JSON.parse = function (...a) { return prune(parse.apply(this, a)); };
+  const json = Response.prototype.json;
+  Response.prototype.json = function (...a) { return json.apply(this, a).then(prune); };
+  let initial = prune(window.ytInitialPlayerResponse);
+  try {
+    Object.defineProperty(window, 'ytInitialPlayerResponse', { configurable: true, get: () => initial, set: (v) => { initial = prune(v); } });
+  } catch {}
+  let adMuted = null; // mute del usuario antes del anuncio
+  const skipAd = () => {
+    const p = player(), v = video();
+    if (!v) return;
+    if (p?.classList?.contains('ad-showing')) {
+      if (adMuted === null) adMuted = v.muted;
+      v.muted = true;
+      if (v.duration > 0 && isFinite(v.duration)) v.currentTime = v.duration;
+      document.querySelector('.ytp-skip-ad-button, .ytp-ad-skip-button, .ytp-ad-skip-button-modern')?.click();
+    } else if (adMuted !== null) {
+      v.muted = adMuted;
+      adMuted = null;
+    }
+  };
+
+  // ---- Radio: como mucho 5 proximas cargadas ----
+  // La radio carga de a 50; al llegar al final YTM pide mas sola. Solo se recorta hacia adelante: quitar lo
+  // ya sonado corre los indices y YTM no mueve su puntero a la actual ("siguiente" salta mal). El autoplay de
+  // una cancion suelta (automixItems) no se toca: recortado no se vuelve a llenar. Listas explicitas tampoco.
+  const KEEP_NEXT = 5;
+  const trimQueue = () => {
+    const list = new URLSearchParams(location.search).get('list');
+    if (location.pathname !== '/watch' || !list?.startsWith('RD')) return;
+    const q = document.querySelector('ytmusic-app')?.queue;
+    if (!q?.getItems || !q.removeItem) return;
+    // removeItem recibe el indice del item como texto (navigationEndpoint.watchEndpoint.index).
+    const idOf = (it) => {
+      const r = it.playlistPanelVideoRenderer ?? it.playlistPanelVideoWrapperRenderer?.primaryRenderer?.playlistPanelVideoRenderer;
+      const i = r?.navigationEndpoint?.watchEndpoint?.index;
+      return typeof i === 'number' ? '' + i : '';
+    };
+    const items = q.getItems(), cur = q.getCurrentItemIndex();
+    if (cur < 0) return;
+    for (const it of items.slice(cur + 1 + KEEP_NEXT)) {
+      const id = idOf(it);
+      if (id) q.removeItem(id);
+    }
+  };
+
   const state = () => {
     const v = video(), m = navigator.mediaSession?.metadata, p = player();
     const ad = !!p?.classList?.contains('ad-showing');
@@ -68,7 +126,8 @@
   // Chequeo barato cada 1 s: engancha el <video> cuando aparece, detecta cambio de tema
   // y cierra el dialogo "¿Seguis ahi?" que pausa tras horas sin interaccion.
   setInterval(() => {
-    hook(); emit();
+    hook(); skipAd(); emit();
+    try { trimQueue(); } catch {}
     document.querySelector('ytmusic-you-there-renderer .yt-spec-button-shape-next, ytmusic-you-there-renderer button')?.click();
   }, 1000);
 
