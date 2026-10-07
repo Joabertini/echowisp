@@ -1,5 +1,5 @@
 // "Reportar un problema": el texto del usuario (y, si lo deja, un resumen tecnico) se manda por HTTPS a
-// reportes.bertinilabs.xyz, que lo guarda y lo reenvia por mail. WinHTTP del sistema: sin dependencias.
+// reportes.bertinilabs.xyz, que lo guarda y avisa al desarrollador. WinHTTP del sistema: sin dependencias.
 use crate::brave::{self, wide};
 use serde_json::{json, Value};
 use std::ptr::{null, null_mut};
