@@ -85,11 +85,22 @@ fn windows() -> String {
     format!("{} {} (build {})", reg_str(k, "ProductName"), reg_str(k, "DisplayVersion"), reg_str(k, "CurrentBuild"))
 }
 
-/// Ultimas lineas de engine.log, sin la carpeta del usuario (puede llevar su nombre).
+/// Ultimas lineas de la sesion actual; si son pocas, completa con el final de la anterior (por si se cerro
+/// por el problema y la reabrieron para reportar). Sin la carpeta del usuario (puede llevar su nombre).
 fn log_tail() -> String {
-    let s = std::fs::read_to_string(brave::data_dir().join("engine.log")).unwrap_or_default();
-    let lines: Vec<&str> = s.lines().collect();
-    let mut t = lines[lines.len().saturating_sub(LOG_LINES)..].join("\n");
+    let leer = |f: &str| std::fs::read_to_string(brave::data_dir().join(f)).unwrap_or_default();
+    let (actual, previa) = (leer("engine.log"), leer("engine.prev.log"));
+    let actual: Vec<&str> = actual.lines().collect();
+    let previa: Vec<&str> = previa.lines().collect();
+    let falta = LOG_LINES.saturating_sub(actual.len());
+    let mut lines = Vec::new();
+    if falta > 0 && !previa.is_empty() {
+        lines.push("--- sesión anterior ---");
+        lines.extend(&previa[previa.len().saturating_sub(falta)..]);
+        lines.push("--- sesión actual ---");
+    }
+    lines.extend(&actual[actual.len().saturating_sub(LOG_LINES)..]);
+    let mut t = lines.join("\n");
     for v in ["USERPROFILE", "USERNAME"] {
         if let Some(p) = std::env::var(v).ok().filter(|p| p.len() > 2) {
             t = t.replace(&p, &format!("%{v}%"));

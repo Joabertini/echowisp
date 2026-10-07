@@ -1682,6 +1682,7 @@ fn main() {
             }
             return;
         }
+        engine::rotate_log();
         SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_SYSTEM_AWARE);
         let scale = GetDpiForSystem() as f32 / 96.0;
         let hinst = GetModuleHandleW(null());

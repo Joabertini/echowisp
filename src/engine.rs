@@ -25,6 +25,13 @@ pub enum Ev {
     Status(String),
 }
 
+/// Al arrancar: el log de la sesion anterior pasa a engine.prev.log (se pisa el previo).
+pub fn rotate_log() {
+    let d = brave::data_dir();
+    let _ = std::fs::rename(d.join("engine.log"), d.join("engine.prev.log"));
+    log(&format!("inicio {}", env!("CARGO_PKG_VERSION")));
+}
+
 pub fn log(m: &str) {
     use std::io::Write;
     let t = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
