@@ -49,7 +49,12 @@ pub struct Engine {
     proc_: Mutex<Option<brave::Proc>>,
     login: AtomicBool,
     exiting: AtomicBool,
+    // Reciclado horario (page.js): que retomar al reabrir ({url, t, paused}) y si la card sigue sin avisos.
+    pending: Mutex<Option<Value>>,
+    quiet: AtomicBool,
 }
+
+const YTM: &str = "https://music.youtube.com";
 
 pub fn start(hwnd: isize) -> Arc<Engine> {
     let e = Arc::new(Engine {
@@ -61,6 +66,8 @@ pub fn start(hwnd: isize) -> Arc<Engine> {
         proc_: Mutex::new(None),
         login: AtomicBool::new(false),
         exiting: AtomicBool::new(false),
+        pending: Mutex::new(None),
+        quiet: AtomicBool::new(false),
     });
     let e2 = e.clone();
     thread::spawn(move || e2.run());
@@ -136,19 +143,30 @@ impl Engine {
                 self.login.store(false, SeqCst);
                 continue;
             }
-            self.post(Ev::Status("Iniciando YouTube Music…".into()));
-            if let Err(e) = self.session(&exe) {
-                log(&format!("sesión: {e}"));
-                if !self.exiting.load(SeqCst) && !self.login.load(SeqCst) {
-                    self.post(Ev::Status(format!("Reconectando ({e})")));
-                    thread::sleep(Duration::from_secs(2));
-                }
+            if !self.quiet.load(SeqCst) {
+                self.post(Ev::Status("Iniciando YouTube Music…".into()));
             }
+            let recycling = match self.session(&exe) {
+                Err(e) if e.kind() == io::ErrorKind::Interrupted => true,
+                Err(e) => {
+                    log(&format!("sesión: {e}"));
+                    self.quiet.store(false, SeqCst);
+                    if !self.exiting.load(SeqCst) && !self.login.load(SeqCst) {
+                        self.post(Ev::Status(format!("Reconectando ({e})")));
+                        thread::sleep(Duration::from_secs(2));
+                    }
+                    false
+                }
+                Ok(()) => false,
+            };
             self.ctx.store(0, SeqCst);
             *self.ws.lock().unwrap() = None;
             if let Some(p) = self.proc_.lock().unwrap().take() {
-                p.kill();
-                p.wait(3000);
+                // Reciclado: Browser.close ya salio; se le da tiempo a cerrar limpio (guarda cookies).
+                if !(recycling && p.wait(3000)) {
+                    p.kill();
+                    p.wait(3000);
+                }
             }
         }
     }
@@ -177,7 +195,8 @@ impl Engine {
         self.raw("Runtime.enable", json!({}));
         self.raw("Runtime.addBinding", json!({ "name": "__ytmEvt" }));
         self.raw("Page.addScriptToEvaluateOnNewDocument", json!({ "source": PAGE_JS }));
-        self.raw("Page.navigate", json!({ "url": "https://music.youtube.com/" }));
+        let url = self.pending.lock().unwrap().as_ref().and_then(|r| r["url"].as_str().map(|u| format!("{YTM}{u}")));
+        self.raw("Page.navigate", json!({ "url": url.unwrap_or_else(|| format!("{YTM}/")) }));
 
         loop {
             let msg = cdp::read_msg(&mut rd, &ws)?;
@@ -191,11 +210,26 @@ impl Engine {
                         if c["auxData"]["isDefault"] == true && c["auxData"]["frameId"] == target.as_str() {
                             let id = c["id"].as_i64().unwrap_or(0);
                             self.ctx.store(id, SeqCst);
+                            // Tras un reciclado, page.js lee __ytmRestore al cargar (solo en YTM, no en about:blank).
+                            if c["origin"].as_str() == Some(YTM) {
+                                if let Some(r) = self.pending.lock().unwrap().take() {
+                                    let expr = format!("window.__ytmRestore = {r}");
+                                    self.raw("Runtime.evaluate", json!({ "contextId": id, "expression": expr }));
+                                }
+                            }
                             self.raw("Runtime.evaluate", json!({ "contextId": id, "expression": PAGE_JS }));
                         }
                     }
                     "Runtime.bindingCalled" if v["params"]["name"] == "__ytmEvt" => {
-                        if let Ok(s) = serde_json::from_str(v["params"]["payload"].as_str().unwrap_or("")) {
+                        if let Ok(s) = serde_json::from_str::<Value>(v["params"]["payload"].as_str().unwrap_or("")) {
+                            if s.get("recycle").is_some() {
+                                log(&format!("reciclado: {}", s["recycle"]));
+                                *self.pending.lock().unwrap() = Some(s["recycle"].clone());
+                                self.quiet.store(true, SeqCst);
+                                self.raw("Browser.close", json!({}));
+                                return Err(io::Error::new(io::ErrorKind::Interrupted, "reciclado"));
+                            }
+                            self.quiet.store(false, SeqCst);
                             self.post(Ev::State(s));
                         }
                     }
