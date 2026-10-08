@@ -36,6 +36,13 @@ Funciona con el Brave del usuario cerrado. Prioridad: recursos mínimos y fluide
 - `--single-process`: `addScriptToEvaluateOnNewDocument` no siempre corre y una 2ª conexión CDP no ve
   contextos → se inyecta `page.js` en cada `executionContextCreated` del frame principal y se usa una
   sola conexión. Filtrar por `frameId == target id` (los iframes de anuncios también son isDefault).
+- **Anuncios propios** (`page.js`): se borran `adPlacements`/`playerAds`/`adSlots` de cada respuesta del
+  reproductor (`JSON.parse`, `Response.json`, `ytInitialPlayerResponse`) y, si igual aparece `.ad-showing`, se
+  silencia, se salta al final y se toca "Omitir". No depende de Shields: con perfil nuevo las listas tardan.
+- **Radio: actual + 5 próximas** (`trimQueue`, por `queue.removeItem(String(watchEndpoint.index))`). Solo
+  hacia adelante: quitar lo ya sonado corre índices y "siguiente" salta mal. `automixItems` (autoplay de
+  canción suelta) no se toca: recortado no se vuelve a llenar. La radio sí pide más al llegar al final.
+- Brave Origin descartado: en Windows es pago (ventana de compra). Respaldo: Edge.
 - DevTools HTTP rechaza HTTP/1.0 y no cierra la conexión → HTTP/1.1 + Content-Length.
 - `DrawTextW` con string vacío revienta (puntero de Vec vacío) → se saltea.
 - Estantes de portada (`browse FEmusic_home`): se buscan por título es/en ("Vuelve a escucharlo",
