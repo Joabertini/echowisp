@@ -43,6 +43,13 @@ Funciona con el Brave del usuario cerrado. Prioridad: recursos mínimos y fluide
 - **Radio: actual + 5 próximas** (`trimQueue`, por `queue.removeItem(String(watchEndpoint.index))`). Solo
   hacia adelante: quitar lo ya sonado corre índices y "siguiente" salta mal. `automixItems` (autoplay de
   canción suelta) no se toca: recortado no se vuelve a llenar. La radio sí pide más al llegar al final.
+- **Reciclado horario** (`page.js` → `engine.rs`): YTM retiene nodos desprendidos (47k vs 7k vivos) y Brave
+  no devuelve la RAM al recargar; solo reiniciarlo la baja (480 → 180 MB medido). Tras 1 h, en pausa (≥ 1 min)
+  o justo antes de terminar una canción, page.js manda `{recycle: {url, t, paused, vol, muted}}`; el exe cierra
+  el navegador, reabre en esa URL y deja `__ytmRestore` antes de page.js (posición, pausa, volumen y mute; el
+  mute de YTM no sobrevive al reinicio). La card no muestra "Iniciando" (`quiet`). Pruebas:
+  `window.__ytmRecycleMs = 0` por CDP.
+- Arranque del navegador: espera hasta 40 s el `DevToolsActivePort` (tras actualizarse tarda más de 15).
 - Brave Origin descartado: en Windows es pago (ventana de compra). Respaldo: Edge.
 - DevTools HTTP rechaza HTTP/1.0 y no cierra la conexión → HTTP/1.1 + Content-Length.
 - `DrawTextW` con string vacío revienta (puntero de Vec vacío) → se saltea.

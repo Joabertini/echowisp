@@ -121,13 +121,94 @@
     if (!v || v.__ytmHooked) return;
     v.__ytmHooked = true;
     for (const e of ['play', 'pause', 'loadedmetadata', 'durationchange', 'ended', 'volumechange']) v.addEventListener(e, () => emit());
+    // El chequeo de 1 s puede saltearse el final de la cancion: timeupdate llega ~4 veces por segundo.
+    v.addEventListener('timeupdate', () => { try { checkRecycle(); } catch {} });
     v.addEventListener('seeked', () => emit(true));
   };
+  // ---- Reciclado horario ----
+  // YTM retiene memoria que solo se libera reiniciando el navegador. Tras una hora, en un momento seguro, se le
+  // pasa al exe que retomar ({url, t, paused}) y el exe reinicia el navegador: en pausa, al instante y en el
+  // mismo punto; sonando, al terminar la cancion (sigue con la proxima). Nunca durante un anuncio.
+  const RECYCLE_MS = 3600e3; // pruebas: window.__ytmRecycleMs por CDP
+  let recycled = false;
+  const watchUrl = (v, list) => '/watch?' + new URLSearchParams(list ? { v, list } : { v });
+  const nextUrl = () => {
+    const qs = new URLSearchParams(location.search), list = qs.get('list');
+    const rep = document.querySelector('ytmusic-player-bar')?.getAttribute('repeat-mode');
+    if (rep === 'ONE') return watchUrl(qs.get('v'), list);
+    const q = document.querySelector('ytmusic-app')?.queue;
+    const vid = (it) => (it?.playlistPanelVideoRenderer ?? it?.playlistPanelVideoWrapperRenderer?.primaryRenderer?.playlistPanelVideoRenderer)?.videoId;
+    const items = q?.getItems?.() ?? [], cur = q?.getCurrentItemIndex?.() ?? -1;
+    let v = vid(items[cur + 1]);
+    if (!v && rep === 'ALL') v = vid(items[0]);
+    if (v) return watchUrl(v, list);
+    const auto = vid(q?.store?.getState?.().queue?.automixItems?.[0]);
+    return auto ? watchUrl(auto) : null; // sin proxima: se retoma la actual en pausa (abajo)
+  };
+  const recycle = (r) => {
+    recycled = true;
+    const p = player(); // el mute de YTM no sobrevive al reinicio: viaja con lo demas
+    r.vol = p?.getVolume?.() ?? null;
+    r.muted = p?.isMuted?.() ?? false;
+    try { window.__ytmEvt?.(JSON.stringify({ recycle: r })); } catch {}
+  };
+  let endTimer = 0;
+  let lastPlaying = 0; // en pausa se espera un minuto: si se acaba de pausar, probablemente vuelva a dar play
+  const checkRecycle = () => {
+    const v = video();
+    if (v && !v.paused) lastPlaying = Date.now();
+    if (recycled || performance.now() < (window.__ytmRecycleMs ?? RECYCLE_MS) || player()?.classList?.contains('ad-showing')) return;
+    const qs = new URLSearchParams(location.search);
+    const here = location.pathname === '/watch' && qs.get('v') ? watchUrl(qs.get('v'), qs.get('list')) : null;
+    if (!v || v.paused || !here) {
+      if (Date.now() - lastPlaying > 60e3) recycle({ url: here, t: v?.currentTime ?? 0, paused: true });
+      return;
+    }
+    // timeupdate llega cada ~250 ms: a 1,5 s del final se programa el corte justo antes del fin (si no, YTM
+    // pasa sola a la proxima y se pierde el momento).
+    const left = v.duration - v.currentTime;
+    if (v.duration > 0 && isFinite(v.duration) && left < 1.5 && !endTimer) {
+      endTimer = setTimeout(() => {
+        endTimer = 0;
+        if (recycled || v.paused || player()?.classList?.contains('ad-showing')) return;
+        if (v.duration - v.currentTime > 0.6) return; // movieron la barra: se reprograma solo
+        const url = nextUrl();
+        v.pause();
+        recycle(url ? { url, t: 0, paused: false } : { url: here, t: 0, paused: true });
+      }, Math.max(0, (left - 0.2) * 1000));
+    }
+  };
+  // Al retomar (el exe deja __ytmRestore antes de este script): mudo hasta llegar al punto y pausar si hacia falta.
+  const restore = window.__ytmRestore;
+  if (restore) {
+    delete window.__ytmRestore;
+    const apply = () => {
+      const v = video(), p = player();
+      if (!v || v.readyState < 1 || !p?.setVolume) return false;
+      if (restore.vol != null) p.setVolume(restore.vol);
+      restore.muted ? p.mute() : p.unMute();
+      if (restore.t > 1) v.currentTime = restore.t;
+      if (restore.paused) v.pause();
+      return true;
+    };
+    let tries = 0;
+    const t = setInterval(() => {
+      const v = video();
+      if (v && (restore.paused || restore.muted)) v.muted = true; // que no se escuche nada antes de aplicar
+      if (apply() || ++tries > 200) {
+        clearInterval(t);
+        if (v) v.muted = restore.muted ?? false;
+        emit(true);
+      }
+    }, 100);
+  }
+
   // Chequeo barato cada 1 s: engancha el <video> cuando aparece, detecta cambio de tema
   // y cierra el dialogo "¿Seguis ahi?" que pausa tras horas sin interaccion.
   setInterval(() => {
     hook(); skipAd(); emit();
     try { trimQueue(); } catch {}
+    try { checkRecycle(); } catch {}
     document.querySelector('ytmusic-you-there-renderer .yt-spec-button-shape-next, ytmusic-you-there-renderer button')?.click();
   }, 1000);
 

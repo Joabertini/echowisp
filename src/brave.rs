@@ -219,7 +219,7 @@ BackForwardCache,SpareRendererForSitePerProcess,AudioServiceOutOfProcess,PaintHo
     .collect();
     let p = spawn(exe, &args)?;
     let _ = std::fs::write(data_dir().join("brave.pid"), p.pid.to_string());
-    for _ in 0..150 {
+    for _ in 0..400 { // 40 s: el primer arranque tras actualizarse el navegador tarda mas de 15
         sleep(Duration::from_millis(100));
         if let Some(port) = std::fs::read_to_string(&port_file).ok().and_then(|s| s.lines().next()?.parse().ok()) {
             return Ok((p, port));
