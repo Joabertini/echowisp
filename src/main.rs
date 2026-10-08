@@ -57,7 +57,6 @@ const T_SEARCH: usize = 1;
 const T_TICK: usize = 2;
 const T_MSG: usize = 3;
 const T_CARET: usize = 4;
-const T_MIX: usize = 5; // refresco de la lista de apps mientras esta abierta
 
 const HK_TOGGLE: i32 = 1;
 const HK_NEXT: i32 = 2;
@@ -127,7 +126,7 @@ struct Item {
 struct MixApp {
     pid: u64,
     name: String,
-    on: bool, // mandada al cable (a Discord)
+    on: bool, // seleccionada para el puente a Discord
     vol: f64, // 0-100
 }
 
@@ -142,11 +141,6 @@ impl Item {
         let s = |k: &str| x[k].as_str().map(String::from);
         Item { id: s("id"), list: s("list"), title: s("title").unwrap_or_default(), sub: s("sub").unwrap_or_default(), pick: s("pick") }
     }
-}
-
-/// "CABLE Output (VB-Audio Virtual Cable)" → "CABLE Output".
-fn short_dev(d: &str) -> &str {
-    d.split(" (").next().unwrap_or(d)
 }
 
 // ---- Lienzo: DIB de 32 bits con formas antialias hechas a mano ----
@@ -367,16 +361,15 @@ struct App {
     // puente a Discord (None si ytm-bridge.exe no esta)
     br: Option<bridge::Bridge>,
     mix_apps: Vec<MixApp>,
-    mix_cable: bool,
+    mix_available: bool,
+    mix_err: String,
     mix_sel: Option<u64>, // app con la barra de volumen desplegada
     mix_drag: Option<usize>,
     br_state: String,
     br_err: String,
     br_has_token: bool,
     br_level: f32,
-    br_devices: Vec<String>,
     br_guilds: Vec<BrGuild>,
-    br_device: String,
     br_guild: Option<String>,
     br_channel: Option<String>,
     // Discord: ventana real aparte (opcional, modulo del instalador)
@@ -396,7 +389,6 @@ struct App {
     browsers: Vec<(String, std::path::PathBuf)>,
     browser_cur: std::path::PathBuf,
     hotkeys: Vec<(i32, HOT_KEY_MODIFIERS, u32)>,
-    cfg_all_dev: bool, // configuracion: mostrar todas las entradas de audio
     blur_main: theme::BlurCache,
     blur_panel: theme::BlurCache,
     panel_edit: Option<(u8, String, u32)>, // (0 fondo/tinte, 1 acento; texto tecleado; color original)
@@ -682,7 +674,7 @@ impl App {
                 self.flash("Elegí servidor y canal");
                 return;
             };
-            json!({ "cmd": "join", "guild": g, "channel": c, "device": self.br_device })
+            json!({ "cmd": "join", "guild": g, "channel": c })
         };
         if let Some(b) = self.br.as_mut() {
             b.send(msg);
@@ -727,6 +719,7 @@ impl App {
     }
 
     fn mix_send(&mut self, v: Value) {
+        if v["cmd"] == "route" { self.mix_err.clear(); }
         if let Some(b) = self.br.as_mut() {
             b.send(v);
         }
@@ -734,18 +727,8 @@ impl App {
     fn on_bridge(&mut self, v: Value) {
         let strs = |x: &Value| x.as_str().map(String::from);
         match v["ev"].as_str() {
-            Some("devices") => {
-                self.br_devices = v["list"].as_array().map(|a| a.iter().filter_map(strs).collect()).unwrap_or_default();
-                // el nombre guardado puede ser parcial ("CABLE Output"): se completa con el real
-                if let Some(d) = self.br_devices.iter().find(|d| d.starts_with(&self.br_device)) {
-                    self.br_device = d.clone();
-                }
-            }
             Some("config") => {
                 self.br_has_token = v["token"].as_bool().unwrap_or(false);
-                if let Some(d) = v["device"].as_str() {
-                    self.br_device = self.br_devices.iter().find(|x| x.starts_with(d)).cloned().unwrap_or_else(|| d.into());
-                }
                 self.br_guild = strs(&v["guild"]);
                 self.br_channel = strs(&v["channel"]);
             }
@@ -793,7 +776,7 @@ impl App {
             }
             Some("level") => self.br_level = v["v"].as_f64().unwrap_or(0.0) as f32,
             Some("apps") if self.mix_drag.is_none() => {
-                self.mix_cable = v["cable"] != false;
+                self.mix_available = v["available"] == true;
                 self.mix_apps = v["list"]
                     .as_array()
                     .map(|a| {
@@ -814,7 +797,9 @@ impl App {
             }
             Some("mix_error") => {
                 let m = format!("Mezclador: {}", v["msg"].as_str().unwrap_or("error"));
+                self.mix_err = m.clone();
                 self.flash(&m);
+                self.panel_render();
             }
             _ => {}
         }
@@ -1616,7 +1601,6 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
                     }
                 }
                 T_TICK => a.invalidate(),
-                T_MIX => a.mix_send(json!({ "cmd": "apps" })),
                 panel::T_PANEL => a.panel_tick(),
                 T_MSG => {
                     KillTimer(hwnd, T_MSG);
@@ -1748,16 +1732,15 @@ fn main() {
             seq: 0,
             br: None,
             mix_apps: Vec::new(),
-            mix_cable: true,
+            mix_available: false,
+            mix_err: String::new(),
             mix_sel: None,
             mix_drag: None,
             br_state: String::new(),
             br_err: String::new(),
             br_has_token: false,
             br_level: 0.0,
-            br_devices: Vec::new(),
             br_guilds: Vec::new(),
-            br_device: "CABLE Output".into(),
             br_guild: None,
             br_channel: None,
             dsc_avail: false,
@@ -1775,7 +1758,6 @@ fn main() {
             browsers: Vec::new(),
             browser_cur: brave::find_brave().unwrap_or_default(),
             hotkeys: panel::load_hotkeys(),
-            cfg_all_dev: false,
             blur_main: (0, 0, 0),
             blur_panel: (0, 0, 0),
             panel_edit: None,

@@ -70,6 +70,35 @@ Funciona con el Brave del usuario cerrado. Prioridad: recursos mínimos y fluide
   al cambiar de ancho se conserva el centro y `pos.txt` guarda la posición de la tarjeta expandida.
 
 ## Medidas
+- Puente a Discord (`bridge/`), sin VB-Cable: WASAPI process loopback por PID/árbol, f32 estéreo
+  48 kHz. Camino del audio (sin hilo ni reloj propio):
+  - `process_capture.rs`: un hilo por app, despierta con el evento de WASAPI y escribe directo en
+    la mezcla (sin copia intermedia).
+  - `audio_mix.rs`: cola por app en orden de llegada; songbird tira un bloque de 20 ms (`Live`)
+    desde su hilo de mezcla. Sin apps sonando → silencio al instante; con apps → espera el bloque
+    completo de todas hasta la próxima marca de 20 ms. Cola > 60 ms → recorta 2 frames por bloque
+    (deriva de relojes); tope 100 ms.
+  - **No alinear por QPC**: el cursor por hora descartaba todo como viejo si songbird se atrasaba
+    (silencio total, medido). Los paquetes llegan contiguos (desvío medido 0).
+  - `serve.rs` abre y cierra la salida (`Shared::open/close`) en su hilo, en orden: un cierre
+    asíncrono del mezclador cortaba la salida nueva al reconectar.
+- Ducking (`mixer.rs`): al enviar una app, volumen de sesión a `1e-4` con contexto propio y
+  ganancia `1e4` en la captura (es post volumen; mute la silencia). Volumen original por sesión en
+  `ruteo.json` v2; se restaura al deseleccionar, leave, fallo, EOF y al reabrir tras cierre forzado.
+  Cambio de volumen desde Windows → se detiene esa fuente y no se pisa (probado, es lo esperado).
+  Revisión de apps cada 1 s; la lista se emite a la card solo si cambió.
+- **Probar el audio antes de pedir prueba en vivo**: `ytm-bridge simular --pid N [--secs S]
+  [--espera S] [--out f.raw]` lee por el mismo camino que songbird (RawAdapter → decodificador, un
+  paquete cada 20 ms) y cuenta saltos/silencio en un tono. `--espera` reproduce el bot conectado
+  antes de elegir la app. Tono de prueba y scripts fuera del repo (`notas/tono/`).
+- `bridge.log` en `%LOCALAPPDATA%\ytm-float\` (anterior: `bridge.prev.log`): estados, errores y
+  contadores de la mezcla cada 10 s. Sin token.
+- Medido en vivo (19045, 1 fuente): sin cortes, CPU ~0,1 %, 19 MB. Falta Win11 y 3 fuentes.
+- Compilar para iterar: `cargo build --profile rapido` (sin LTO, ~30 s; release con LTO tarda
+  20 min con poca RAM). Sin cmake en el PATH, `LIBOPUS_LIB_DIR` = `out` de libopus_sys en
+  `target/release/build/` + `LIBOPUS_STATIC=1`.
+- `ytm-bridge audio-probe`: diagnóstico sin Discord. `IAudioClient2` no existe en process
+  loopback (no pedir `POST_VOLUME_LOOPBACK`).
 - Exe: ~270 KB; ~2 MB privados. Brave: 2 procesos, ~180–245 MB reproduciendo; CPU ~0,2 %.
 
 ## Pendiente / ideas

@@ -28,6 +28,27 @@ navegador (memoria, GPU) son configuración de nuestro Brave y no tocan Discord.
 El puente (`bridge/`) usa un **bot** con su propio token y la API oficial para bots: no usa la cuenta
 del usuario.
 
+### Audio de aplicaciones en el puente
+
+El puente captura las apps elegidas por su árbol de procesos con WASAPI process loopback. No requiere
+VB-Cable, driver ni permisos de administrador. En la card de apps, activá las fuentes que querés enviar;
+su barra regula la ganancia del envío, sin cambiar el volumen que elegiste en Windows. Se pueden mezclar
+varias fuentes. El bot solo transmite audio: no recibe las voces del canal.
+
+Mientras una fuente transmite, el puente baja su volumen de sesión en Windows a `0,0001` (−80 dB)
+y compensa ese factor en el audio enviado. No usa mute: en Windows 10 22H2 build 19045, la prueba
+offline confirmó que mute también silencia la captura. Al deseleccionar, salir o cerrar, restaura el
+volumen anterior. Si detecta que el volumen cambió desde Windows durante el envío, detiene esa fuente
+y conserva el nuevo valor. `ruteo.json` permite recuperar el volumen tras un cierre forzado y migra
+ruteos pendientes de versiones anteriores.
+
+Una app sin sesión de audio compartida activa (incluido el modo exclusivo), una sesión silenciada o
+con volumen cero, o un árbol que se solapa con Discord u otra fuente produce un error visible; el
+puente no cambia a captura global. Probado en Windows 10 22H2; falta Windows 11.
+
+Si algo suena mal, `%LOCALAPPDATA%\ytm-float\bridge.log` registra estados, errores y cada 10 s los
+contadores de la mezcla.
+
 ## Uso
 
 - Acceso directo: escritorio y menú Inicio → **YTM Float**. Instalado en `%LOCALAPPDATA%\Programs\ytm-float\`.
