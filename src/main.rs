@@ -8,6 +8,7 @@ mod engine;
 mod panel;
 mod report;
 mod theme;
+mod update;
 
 use engine::{Engine, Ev, WM_ENGINE};
 use serde_json::{json, Value};
@@ -403,6 +404,7 @@ struct App {
     show_br: bool,     // filas del puente y de Discord a la vista (card.json)
     show_dsc: bool,
     rep: report::Form, // "Reportar un problema" (panel.rs)
+    upd: update::State, // "Actualizar" (panel.rs, update.rs)
 }
 
 static mut APP: *mut App = null_mut();
@@ -1639,6 +1641,11 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
             a.on_engine(*ev);
             0
         }
+        update::WM_UPDATE => {
+            let m = Box::from_raw(lp as *mut update::Msg);
+            a.update_msg(*m);
+            0
+        }
         report::WM_REPORT => {
             let err = Box::from_raw(lp as *mut String);
             a.report_done(wp == 1, *err);
@@ -1776,10 +1783,12 @@ fn main() {
             show_br: panel::card_pref("puente"),
             show_dsc: panel::card_pref("discord"),
             rep: report::Form::new(),
+            upd: update::State::None,
         });
         APP = Box::into_raw(a);
         app().br = bridge::Bridge::start(hwnd as isize); // modulo opcional
         app().dsc_avail = std::env::current_exe().map(|e| e.with_file_name("discord.module").exists()).unwrap_or(false);
+        update::check(hwnd as isize);
         app().render(); // una ventana en capas no se ve hasta el primer UpdateLayeredWindow
         ShowWindow(hwnd, SW_SHOWNOACTIVATE);
         // Atajos globales (andan dentro de juegos). Si otra app ya tiene alguno, se ignora.

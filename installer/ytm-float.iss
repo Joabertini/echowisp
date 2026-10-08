@@ -61,6 +61,8 @@ Name: "{userstartup}\YTM Float"; Filename: "{app}\ytm-float.exe"; Tasks: inicio
 
 [Run]
 Filename: "{app}\ytm-float.exe"; Description: "Abrir YTM Float"; Flags: postinstall nowait skipifsilent
+; Actualizacion desde la card (/RELANZAR=1, silenciosa): se vuelve a abrir sola.
+Filename: "{app}\ytm-float.exe"; Flags: nowait; Check: Relanzar
 
 [Code]
 var
@@ -122,6 +124,11 @@ begin
     Pagina.SelectedValueIndex := 0;
     if Rutas.IndexOf(Param) >= 0 then Pagina.SelectedValueIndex := Rutas.IndexOf(Param);
   end;
+end;
+
+function Relanzar(): Boolean;
+begin
+  Result := ExpandConstant('{param:RELANZAR|0}') = '1';
 end;
 
 function ShouldSkipPage(PageID: Integer): Boolean;
