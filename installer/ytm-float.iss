@@ -1,10 +1,7 @@
 ; Instalador modular de YTM Float. Compilar: ISCC installer\ytm-float.iss (despues de cargo build --release
-; en la raiz y en bridge\). Por usuario, sin admin. Navegador: cualquier Chromium detectado o Brave Origin
-; portatil (se baja). Silencioso: /NAVEGADOR=ruta-al-exe o /NAVEGADOR=origin.
+; en la raiz y en bridge\). Por usuario, sin admin. Navegador: cualquier Chromium detectado (Brave si esta;
+; si no, Edge, que viene con Windows). Silencioso: /NAVEGADOR=ruta-al-exe.
 #define AppVer "0.3.0"
-#define BraveVer "1.96.61"
-#define BraveZip "brave-origin-v" + BraveVer + "-win32-x64.zip"
-#define BraveSha "97860f4bfa908bd9f4514f5a4d53ed5dcd4093280dd98cef3c7602796025f734"
 
 [Setup]
 AppId={{6B1F3C2E-9D4A-4E7B-8C51-2F0A9E7D3B14}
@@ -51,6 +48,8 @@ Source: "..\bridge\target\release\ytm-bridge.exe"; DestDir: "{app}"; Flags: igno
 ; Al reinstalar sin un modulo, se saca lo que habia quedado.
 Type: files; Name: "{app}\discord.module"; Check: not WizardIsComponentSelected('discord')
 Type: files; Name: "{app}\ytm-bridge.exe"; Check: not WizardIsComponentSelected('puente')
+; Brave Origin portatil de versiones viejas: en Windows es pago y abre una ventana de compra.
+Type: filesandordirs; Name: "{app}\brave"
 
 [UninstallDelete]
 Type: filesandordirs; Name: "{app}\brave"
@@ -66,8 +65,7 @@ Filename: "{app}\ytm-float.exe"; Description: "Abrir YTM Float"; Flags: postinst
 [Code]
 var
   Pagina: TInputOptionWizardPage;
-  Bajada: TDownloadWizardPage;
-  Rutas: TStringList; { ruta de cada opcion; '' = Brave Origin portatil }
+  Rutas: TStringList; { ruta de cada opcion }
 
 function AppPath(Root: Integer; Exe: String): String;
 begin
@@ -103,77 +101,43 @@ begin
   Pagina.Add(Nombre);
 end;
 
-function Origin(): Boolean;
-begin
-  Result := Rutas[Pagina.SelectedValueIndex] = '';
-end;
-
-function Elegido(): String;
-begin
-  if Origin() then Result := ExpandConstant('{app}\brave\brave.exe') else Result := Rutas[Pagina.SelectedValueIndex];
-end;
-
 procedure InitializeWizard;
 var
   Param: String;
-  I: Integer;
 begin
   Rutas := TStringList.Create;
   Pagina := CreateInputOptionPage(wpSelectComponents, 'Navegador',
     'YTM Float reproduce con un navegador sin ventana. ¿Cuál uso?',
-    'Recomendado: Brave. Es el único con bloqueo de anuncios nativo (Shields); con otro navegador YouTube Music puede mostrar publicidad.',
+    'YTM Float saca los anuncios por su cuenta: anda igual con cualquiera. Si no tenés preferencia, dejá el marcado.',
     True, False);
-  Agregar('Brave (recomendado)', Buscar('brave.exe', 'BraveSoftware\Brave-Browser\Application\brave.exe'));
-  Agregar('Google Chrome (sin Shields)', Buscar('chrome.exe', 'Google\Chrome\Application\chrome.exe'));
-  Agregar('Microsoft Edge (sin Shields)', Buscar('msedge.exe', 'Microsoft\Edge\Application\msedge.exe'));
-  Agregar('Vivaldi (sin Shields)', Buscar('vivaldi.exe', 'Vivaldi\Application\vivaldi.exe'));
-  Agregar('Chromium (sin Shields)', Buscar('chromium.exe', 'Chromium\Application\chrome.exe'));
-  Rutas.Add('');
-  Pagina.Add('Bajar Brave Origin portátil, con Shields (208 MB, queda en la carpeta de la app)');
-  { Por defecto: Brave si esta; si no, Origin. }
-  if Pos('brave', Lowercase(Rutas[0])) > 0 then Pagina.SelectedValueIndex := 0
-  else Pagina.SelectedValueIndex := Rutas.Count - 1;
+  { Orden de preferencia: Brave si esta; si no, Edge (viene con Windows). }
+  Agregar('Brave', Buscar('brave.exe', 'BraveSoftware\Brave-Browser\Application\brave.exe'));
+  Agregar('Microsoft Edge', Buscar('msedge.exe', 'Microsoft\Edge\Application\msedge.exe'));
+  Agregar('Google Chrome', Buscar('chrome.exe', 'Google\Chrome\Application\chrome.exe'));
+  Agregar('Vivaldi', Buscar('vivaldi.exe', 'Vivaldi\Application\vivaldi.exe'));
+  Agregar('Chromium', Buscar('chromium.exe', 'Chromium\Application\chrome.exe'));
   Param := ExpandConstant('{param:NAVEGADOR|}');
-  if CompareText(Param, 'origin') = 0 then Pagina.SelectedValueIndex := Rutas.Count - 1
-  else if (Param <> '') and FileExists(Param) then begin
-    Agregar(ExtractFileName(Param), Param);
-    Pagina.SelectedValueIndex := Rutas.IndexOf(Param);
+  if (Param <> '') and FileExists(Param) then Agregar(ExtractFileName(Param), Param);
+  if Rutas.Count > 0 then begin
+    Pagina.SelectedValueIndex := 0;
+    if Rutas.IndexOf(Param) >= 0 then Pagina.SelectedValueIndex := Rutas.IndexOf(Param);
   end;
-  Bajada := CreateDownloadPage('Bajando Brave Origin', 'Se guarda junto a YTM Float; no se instala en el sistema.', nil);
 end;
 
-{ Corre tambien en modo silencioso (NextButtonClick no). }
+function ShouldSkipPage(PageID: Integer): Boolean;
+begin
+  Result := (PageID = Pagina.ID) and (Rutas.Count < 2);
+end;
+
 function PrepareToInstall(var NeedsRestart: Boolean): String;
 begin
   Result := '';
-  if not Origin() or FileExists(Elegido()) then Exit;
-  Bajada.Clear;
-  Bajada.Add('https://github.com/brave/brave-browser/releases/download/v{#BraveVer}/{#BraveZip}', '{#BraveZip}', '{#BraveSha}');
-  if not WizardSilent then Bajada.Show;
-  try
-    try
-      Bajada.Download;
-    except
-      Result := 'No pude bajar Brave Origin: ' + GetExceptionMessage;
-    end;
-  finally
-    if not WizardSilent then Bajada.Hide;
-  end;
+  if Rutas.Count = 0 then
+    Result := 'No encontré ningún navegador compatible (Brave, Edge, Chrome, Vivaldi o Chromium). Instalá uno y volvé a correr el instalador.';
 end;
 
 procedure CurStepChanged(CurStep: TSetupStep);
-var
-  Code: Integer;
-  Zip, Dest: String;
 begin
-  if CurStep <> ssPostInstall then Exit;
-  Zip := ExpandConstant('{tmp}\{#BraveZip}');
-  if FileExists(Zip) then begin
-    Dest := ExpandConstant('{app}\brave');
-    ForceDirectories(Dest);
-    { tar.exe viene con Windows 10 1803+ y abre zip. }
-    if not Exec(ExpandConstant('{sys}\tar.exe'), '-xf "' + Zip + '" -C "' + Dest + '"', '', SW_HIDE, ewWaitUntilTerminated, Code) or (Code <> 0) then
-      MsgBox('No pude descomprimir Brave Origin (código ' + IntToStr(Code) + ').', mbError, MB_OK);
-  end;
-  SaveStringToFile(ExpandConstant('{app}\navegador.txt'), Elegido(), False);
+  if CurStep = ssPostInstall then
+    SaveStringToFile(ExpandConstant('{app}\navegador.txt'), Rutas[Pagina.SelectedValueIndex], False);
 end;
