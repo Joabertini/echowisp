@@ -143,6 +143,8 @@ struct App { pid: u32, birth: u64, exe: String, name: String, sessions: Vec<Sess
 fn apps(en: &IMMDeviceEnumerator) -> Vec<App> {
     let mut out: Vec<App> = Vec::new();
     let (ytm, discord, me) = (pid_file("brave.pid"), pid_file("discord.pid"), std::process::id());
+    // Chromium suena desde un proceso hijo (servicio de audio): se reconoce por árbol, no por PID.
+    let parents = if ytm != 0 || discord != 0 { parent_map() } else { HashMap::new() };
     unsafe {
         let Ok(devs) = en.EnumAudioEndpoints(eRender, DEVICE_STATE_ACTIVE) else { return out };
         for i in 0..devs.GetCount().unwrap_or(0) {
@@ -153,7 +155,7 @@ fn apps(en: &IMMDeviceEnumerator) -> Vec<App> {
                 let Ok(c2) = ss.GetSession(j).and_then(|c| c.cast::<IAudioSessionControl2>()) else { continue };
                 if c2.IsSystemSoundsSession() == S_OK || c2.GetState().map_or(true, |s| s == AudioSessionStateExpired) { continue; }
                 let pid = c2.GetProcessId().unwrap_or(0);
-                if pid == 0 || pid == me || pid == discord { continue; }
+                if pid == 0 || pid == me || (discord != 0 && descendant(pid, discord, &parents)) { continue; }
                 let (Some(exe), Some(birth)) = (exe_path(pid), process_birth(pid)) else { continue };
                 let stem = std::path::Path::new(&exe).file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
                 if stem.to_lowercase().contains("discord") { continue; }
@@ -164,7 +166,7 @@ fn apps(en: &IMMDeviceEnumerator) -> Vec<App> {
                 CoTaskMemFree(Some(ptr.0 as _));
                 match out.iter_mut().find(|a| a.pid == pid) {
                     Some(a) => a.sessions.push(Session { id, vol, control }),
-                    None => out.push(App { pid, birth, exe, name: if pid == ytm { "Música (YTM Float)".into() } else { stem }, sessions: vec![Session { id, vol, control }] }),
+                    None => out.push(App { pid, birth, exe, name: if ytm != 0 && descendant(pid, ytm, &parents) { "Música (YTM Float)".into() } else { stem }, sessions: vec![Session { id, vol, control }] }),
                 }
             }
         }
@@ -552,6 +554,15 @@ pub fn start(audio: Arc<audio_mix::Shared>) -> (mpsc::Sender<Command>, std::thre
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn audio_service_child_belongs_to_its_browser() {
+        // 5328 = Brave de Discord, 11812 = su servicio de audio; 11456 = Brave del usuario.
+        let parents = HashMap::from([(11812, 5328), (5328, 6956), (8152, 11456), (11456, 6576)]);
+        assert!(descendant(11812, 5328, &parents));
+        assert!(descendant(5328, 5328, &parents));
+        assert!(!descendant(8152, 5328, &parents));
+    }
     use std::cell::Cell;
     struct Fake { value: Cell<f32>, muted: bool, fails: Cell<bool> }
     impl VolumeBackend for Fake {
