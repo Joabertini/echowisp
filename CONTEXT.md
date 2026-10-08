@@ -50,6 +50,11 @@ Funciona con el Brave del usuario cerrado. Prioridad: recursos mínimos y fluide
   mute de YTM no sobrevive al reinicio). La card no muestra "Iniciando" (`quiet`). Pruebas:
   `window.__ytmRecycleMs = 0` por CDP.
 - Arranque del navegador: espera hasta 40 s el `DevToolsActivePort` (tras actualizarse tarda más de 15).
+- **Actualizar desde la card** (`update.rs`): al arrancar lee `www.bertinilabs.xyz/ytm-float/version.json`
+  (`{version, url, sha256}`); si hay una más nueva, Configuración muestra "Actualizar a X". Baja el instalador
+  por WinHTTP (sin la marca de internet: SmartScreen no lo frena), verifica SHA-256 (BCrypt), lo corre con
+  `/VERYSILENT /RELANZAR=1 /NAVEGADOR=<actual>` tras ~2 s (cmd + ping: la card tiene que cerrarse antes por el
+  AppMutex) y el instalador reabre la card. **Al publicar una versión: subir el exe y actualizar version.json.**
 - Brave Origin descartado: en Windows es pago (ventana de compra). Respaldo: Edge.
 - DevTools HTTP rechaza HTTP/1.0 y no cierra la conexión → HTTP/1.1 + Content-Length.
 - `DrawTextW` con string vacío revienta (puntero de Vec vacío) → se saltea.

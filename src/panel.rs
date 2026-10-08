@@ -39,6 +39,7 @@ pub enum PHit {
     Browser(usize),
     Hotkey(usize),
     Report,
+    Update,
     Note(&'static str),
     RText,
     RContact,
@@ -213,6 +214,10 @@ impl App {
                         row(PHit::Hotkey(i), 12, PW - 12, y, y + P_ROW, &mut v);
                         y += P_ROW;
                     }
+                }
+                if !matches!(self.upd, update::State::None) {
+                    row(PHit::Update, 12, PW - 12, y + 6, y + 36, &mut v);
+                    y += 40;
                 }
                 row(PHit::Report, 12, PW - 12, y + 6, y + 36, &mut v);
                 y += 40;
@@ -486,6 +491,14 @@ impl App {
                             }
                         }
                     }
+                    PHit::Update => {
+                        let c = match &self.upd {
+                            update::State::Ready(_) if hov == hit => th().accent,
+                            update::State::Ready(_) => GREEN,
+                            _ => th().tab,
+                        };
+                        cv.round(l, t, rr, b, self.pf(10.0), c);
+                    }
                     PHit::Token | PHit::Invite | PHit::Report => cv.round(l, t, rr, b, self.pf(10.0), if hov == hit { th().accent } else { th().tab }),
                     PHit::RText | PHit::RContact => {
                         let f = if hit == PHit::RText { report::Field::Text } else { report::Field::Contact };
@@ -582,6 +595,16 @@ impl App {
                     }
                     PHit::Invite => cv.text(self.f.small, "Invitar el bot a un servidor", z, th().ink, DT_CENTER),
                     PHit::Report => cv.text(self.f.small, "Reportar un problema", z, th().ink, DT_CENTER),
+                    PHit::Update => {
+                        let t = match &self.upd {
+                            update::State::Ready(i) => format!("Actualizar a {}", i.version),
+                            update::State::Busy(p, _) if *p >= 100 => "Instalando…".to_string(),
+                            update::State::Busy(p, _) => format!("Bajando… {p} %"),
+                            update::State::Error(e, _) => format!("{e} · reintentar"),
+                            update::State::None => String::new(),
+                        };
+                        cv.text(self.f.small, &t, z, th().ink, DT_CENTER);
+                    }
                     PHit::Note(t) => cv.text_wrap(self.f.small, t, z, th().dim),
                     PHit::RStatus => cv.text_wrap(self.f.small, &self.rep.error, z, RED),
                     PHit::RText | PHit::RContact => {
@@ -721,6 +744,14 @@ impl App {
                 }
             }
             PHit::Report => self.panel_open(Panel::Report),
+            PHit::Update => {
+                let info = match &self.upd {
+                    update::State::Ready(i) | update::State::Error(_, i) => i.clone(),
+                    _ => return,
+                };
+                self.upd = update::State::Busy(0, info.clone());
+                update::install(self.hwnd as isize, info, self.browser_cur.clone());
+            }
             PHit::RText | PHit::RContact => {
                 // Igual que el color hex: la card de costado toma el foco para recibir el teclado.
                 self.rep.focus = Some(if hit == PHit::RText { report::Field::Text } else { report::Field::Contact });
@@ -775,6 +806,31 @@ impl App {
             self.flash("Reporte enviado. ¡Gracias!");
         } else {
             self.rep.error = err;
+        }
+        self.panel_render();
+    }
+
+    /// Avisos de update.rs (WM_UPDATE).
+    pub fn update_msg(&mut self, m: update::Msg) {
+        match m {
+            update::Msg::Available(i) => {
+                self.flash(&format!("Hay una versión nueva ({}): Configuración", i.version));
+                self.upd = update::State::Ready(i);
+            }
+            update::Msg::Progress(p) => {
+                if let update::State::Busy(pct, _) = &mut self.upd {
+                    *pct = p;
+                }
+            }
+            update::Msg::Failed(e) => {
+                if let update::State::Ready(i) | update::State::Busy(_, i) | update::State::Error(_, i) = std::mem::replace(&mut self.upd, update::State::None) {
+                    self.upd = update::State::Error(e, i);
+                }
+            }
+            // El instalador espera a que la card se cierre (AppMutex) y la vuelve a abrir.
+            update::Msg::Launched => unsafe {
+                DestroyWindow(self.hwnd);
+            },
         }
         self.panel_render();
     }
