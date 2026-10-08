@@ -1,10 +1,8 @@
-// Modo `serve`: la card lanza el puente como hijo y hablan por lineas JSON.
-//   card → puente: {"cmd":"invite"} · {"cmd":"token","token":"…"} · {"cmd":"join","guild":"…","channel":"…","device":"…"} · {"cmd":"leave"}
-//   puente → card: {"ev":"devices","list":[…]} · {"ev":"config",…} · {"ev":"guilds","list":[…]}
-//                  {"ev":"state","s":"…","msg":"…"} · {"ev":"level","v":0.0}
-//   mezclador (mixer.rs): {"cmd":"apps"|"route"|"vol"} → {"ev":"apps",…} · {"ev":"mix_error","msg":"…"}
+// Modo `serve`: la card lanza el puente como hijo y hablan por líneas JSON.
+//   card → puente: invite · token · join(guild,channel) · leave · apps · route(pid,on) · vol(pid,v)
+//   puente → card: config · guilds · state · level · apps(available,mode,list) · mix_error
 // Si la card se cierra (stdin EOF) el puente sale del canal y termina.
-use crate::{bot_id, capture, config_path};
+use crate::{audio_mix::{Live, Shared}, bot_id, config_path, mixer::Command};
 use serde_json::{json, Value};
 use songbird::{input::RawAdapter, shards::TwilightMap, Songbird};
 use std::{
@@ -21,7 +19,23 @@ use twilight_gateway::{Event, EventTypeFlags, Intents, Shard, ShardId, ShardStat
 use twilight_model::{channel::ChannelType, gateway::payload::incoming::GuildCreate, id::Id};
 
 pub fn emit(v: Value) {
+    if !matches!(v["ev"].as_str(), Some("level" | "apps" | "guilds")) { log(&v.to_string()); }
     println!("{v}"); // stdout es LineWriter: cada linea sale entera
+}
+
+/// bridge.log (sesion actual; la anterior queda en bridge.prev.log): estados y errores, sin token.
+pub fn log(line: &str) {
+    use std::io::Write;
+    static FILE: std::sync::OnceLock<Option<Mutex<std::fs::File>>> = std::sync::OnceLock::new();
+    let file = FILE.get_or_init(|| {
+        let path = config_path().with_file_name("bridge.log");
+        let _ = std::fs::rename(&path, path.with_file_name("bridge.prev.log"));
+        std::fs::File::create(path).ok().map(Mutex::new)
+    });
+    if let Some(f) = file {
+        let t = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis());
+        let _ = writeln!(f.lock().unwrap(), "{t} {line}");
+    }
 }
 
 fn state(s: &str, msg: &str) {
@@ -60,43 +74,27 @@ fn emit_guilds(g: &Guilds) {
 
 /// Captura en un hilo propio (el Stream de cpal no es Send); muere al soltar `stop`.
 struct Tx {
-    stop: smpsc::Sender<()>,
     guild: NonZeroU64,
+    join_id: u64,
 }
 
-fn start_capture(device: &str, level: Arc<AtomicU32>) -> Result<(smpsc::Sender<()>, RawAdapter<capture::Live>), String> {
-    let (tx, live) = capture::live();
-    let (ready_tx, ready_rx) = smpsc::channel();
-    let (stop_tx, stop_rx) = smpsc::channel::<()>();
-    let dev = device.to_string();
-    std::thread::spawn(move || {
-        let r = capture::open(&dev, move |d| {
-            let peak = d.iter().fold(0f32, |m, s| m.max(s.abs()));
-            // pico decreciente: el medidor de la card cae suave
-            let old = f32::from_bits(level.load(Relaxed));
-            level.store(peak.max(old * 0.9).to_bits(), Relaxed);
-            let _ = tx.try_send(d.to_vec()); // cola llena: el bloque se pierde
-        });
-        match r {
-            Ok(cap) => {
-                let _ = ready_tx.send(Ok((cap.rate, cap.channels)));
-                let _ = stop_rx.recv(); // espera a que la suelten
-                drop(cap);
-            }
-            Err(e) => {
-                let _ = ready_tx.send(Err(e));
-            }
-        }
-    });
-    let (rate, ch) = ready_rx.recv().map_err(|_| "la captura no arrancó".to_string())??;
-    Ok((stop_tx, RawAdapter::new(live, rate, ch as u32)))
+fn start_capture(mix: &smpsc::Sender<Command>, audio: &Arc<Shared>) -> Result<RawAdapter<Live>, String> {
+    let live = audio.open();
+    let (reply, answer) = smpsc::channel();
+    mix.send(Command::Active(true, reply)).map_err(|_| "el mezclador terminó".to_string())?;
+    answer.recv_timeout(Duration::from_secs(15)).map_err(|_| "timeout al activar las fuentes".to_string())??;
+    Ok(RawAdapter::new(live, crate::audio_mix::RATE, crate::audio_mix::CHANNELS as u32))
 }
 
 pub async fn serve() {
     let mut cfg = load();
-    emit(json!({ "ev": "devices", "list": capture::input_devices() }));
+    if cfg["version"] != 2 {
+        if let Some(object) = cfg.as_object_mut() { object.remove("device"); }
+        cfg["version"] = json!(2);
+        save(&cfg);
+    }
     emit(json!({ "ev": "config", "token": cfg["token"].is_string(),
-        "guild": cfg["guild"], "channel": cfg["channel"], "device": cfg["device"].as_str().unwrap_or("CABLE Output") }));
+        "guild": cfg["guild"], "channel": cfg["channel"], "mode": "process_loopback" }));
 
     let (cmd_tx, mut cmd_rx) = tokio::sync::mpsc::unbounded_channel::<Value>();
     tokio::spawn(async move {
@@ -109,13 +107,17 @@ pub async fn serve() {
         // stdin cerrado: la card ya no esta
     });
 
-    let (mix, mix_thread) = crate::mixer::start();
-    let guilds: Guilds = Default::default();
     let level = Arc::new(AtomicU32::new(0));
+    let audio = Shared::new(level.clone());
+    let (mix, mix_thread) = crate::mixer::start(audio.clone());
+    let guilds: Guilds = Default::default();
     let mut songbird: Option<Arc<Songbird>> = None;
     let mut gateway: Option<tokio::task::JoinHandle<()>> = None;
     let mut tx: Option<Tx> = None;
+    let mut next_join_id = 0u64;
+    let (fail_tx, mut fail_rx) = tokio::sync::mpsc::unbounded_channel::<(u64, String)>();
     let mut tick = tokio::time::interval(Duration::from_millis(200));
+    let mut ticks = 0u64;
 
     // Conecta el bot (gateway) con el token guardado; los servidores llegan solos por GUILD_CREATE.
     let connect = |token: String, guilds: Guilds| -> Option<(Arc<Songbird>, tokio::task::JoinHandle<()>)> {
@@ -127,14 +129,15 @@ pub async fn serve() {
         let senders = TwilightMap::new(HashMap::from([(shard.id().number(), shard.sender())]));
         let sb = Arc::new(Songbird::twilight(Arc::new(senders), Id::from(user)));
         let sb2 = sb.clone();
+        let gateway_fail = fail_tx.clone();
         state("conectando", "");
         let h = tokio::spawn(async move {
             while let Some(item) = shard.next_event(EventTypeFlags::all()).await {
                 let ev = match item {
                     Ok(e) => e,
                     Err(e) => {
-                        state("error", &format!("gateway: {e}"));
-                        continue;
+                        let _ = gateway_fail.send((0, format!("gateway: {e}")));
+                        return;
                     }
                 };
                 sb2.process(&ev).await;
@@ -160,15 +163,15 @@ pub async fn serve() {
                     // Cierre fatal (token invalido, intents): sin esto la card quedaba en "conectando…".
                     Event::GatewayClose(f) if shard.state() == ShardState::FatallyClosed => {
                         match f.map(|f| f.code).unwrap_or(0) {
-                            4004 => state("error", "token inválido"),
-                            c => state("error", &format!("Discord cerró la conexión ({c})")),
+                            4004 => { let _ = gateway_fail.send((0, "token inválido".into())); }
+                            c => { let _ = gateway_fail.send((0, format!("Discord cerró la conexión ({c})"))); }
                         }
                         return;
                     }
                     _ => {}
                 }
             }
-            state("error", "desconectado de Discord");
+            let _ = gateway_fail.send((0, "desconectado de Discord".into()));
         });
         Some((sb, h))
     };
@@ -188,10 +191,12 @@ pub async fn serve() {
                 let Some(c) = c else { break };
                 match c["cmd"].as_str() {
                     Some("apps" | "route" | "vol") => {
-                        let _ = mix.send(c);
+                        let _ = mix.send(Command::Json(c));
                     }
                     Some("token") => {
                         let Some(t) = c["token"].as_str().map(|s| s.trim().to_string()) else { continue };
+                        if let (Some(old), Some(sb)) = (tx.take(), songbird.as_ref()) { let _ = sb.remove(old.guild).await; }
+                        audio.close(); let (reply, _) = smpsc::channel(); let _ = mix.send(Command::Active(false, reply));
                         cfg["token"] = json!(t);
                         save(&cfg);
                         if let Some(h) = gateway.take() { h.abort(); }
@@ -211,16 +216,15 @@ pub async fn serve() {
                     Some("join") => {
                         let (Some(g), Some(ch)) = (id(&c["guild"]), id(&c["channel"])) else { continue };
                         let Some(sb) = songbird.clone() else { state("sin_token", ""); continue };
-                        let device = c["device"].as_str().unwrap_or("CABLE Output").to_string();
                         if let Some(t) = tx.take() {
                             let _ = sb.remove(t.guild).await;
-                            let _ = t.stop.send(());
+                            audio.close(); let (reply, _) = smpsc::channel(); let _ = mix.send(Command::Active(false, reply));
                         }
                         cfg["guild"] = json!(g.to_string());
                         cfg["channel"] = json!(ch.to_string());
-                        cfg["device"] = json!(device);
+                        cfg.as_object_mut().map(|v| v.remove("device"));
                         save(&cfg);
-                        let (stop, src) = match start_capture(&device, level.clone()) {
+                        let src = match start_capture(&mix, &audio) {
                             Ok(x) => x,
                             Err(e) => { state("error", &e); continue; }
                         };
@@ -230,20 +234,23 @@ pub async fn serve() {
                                 let mut call = call.lock().await;
                                 let _ = call.deafen(true).await; // solo transmite
                                 let pista = call.play_only_input(src.into());
-                                tx = Some(Tx { stop, guild: g });
+                                next_join_id += 1;
+                                tx = Some(Tx { guild: g, join_id: next_join_id });
                                 state("transmitiendo", "");
                                 // Si la pista no arranca (codec, formato) songbird no avisa: se revisa a los 2 s.
+                                let track_fail = fail_tx.clone();
+                                let join_id = next_join_id;
                                 tokio::spawn(async move {
                                     tokio::time::sleep(Duration::from_secs(2)).await;
                                     if let Ok(info) = pista.get_info().await {
                                         if let songbird::tracks::PlayMode::Errored(e) = info.playing {
-                                            state("error", &format!("el audio no arrancó: {e:?}"));
+                                            let _ = track_fail.send((join_id, format!("el audio no arrancó: {e:?}")));
                                         }
                                     }
                                 });
                             }
                             Err(e) => {
-                                let _ = stop.send(());
+                                audio.close(); let (reply, _) = smpsc::channel(); let _ = mix.send(Command::Active(false, reply));
                                 state("error", &format!("no pude entrar: {e}"));
                             }
                         }
@@ -251,7 +258,7 @@ pub async fn serve() {
                     Some("leave") => {
                         if let (Some(t), Some(sb)) = (tx.take(), songbird.as_ref()) {
                             let _ = sb.remove(t.guild).await;
-                            let _ = t.stop.send(());
+                            audio.close(); let (reply, _) = smpsc::channel(); let _ = mix.send(Command::Active(false, reply));
                         }
                         level.store(0, Relaxed);
                         state(if songbird.is_some() { "listo" } else { "sin_token" }, "");
@@ -262,16 +269,34 @@ pub async fn serve() {
             _ = tick.tick() => {
                 if tx.is_some() {
                     emit(json!({ "ev": "level", "v": (f32::from_bits(level.load(Relaxed)) * 1000.0).round() / 1000.0 }));
+                    ticks += 1;
+                    if ticks % 50 == 0 { log(&format!("audio {:?}", audio.stats())); } // cada 10 s
+                }
+            }
+            failure = fail_rx.recv() => {
+                if let Some((join_id, message)) = failure {
+                    if join_id != 0 && tx.as_ref().is_none_or(|t| t.join_id != join_id) { continue; }
+                    if let (Some(t), Some(sb)) = (tx.take(), songbird.as_ref()) {
+                        let _ = sb.remove(t.guild).await;
+                    }
+                    audio.close();
+                    let (reply, _) = smpsc::channel();
+                    let _ = mix.send(Command::Active(false, reply));
+                    level.store(0, Relaxed);
+                    if join_id == 0 {
+                        if let Some(h) = gateway.take() { h.abort(); }
+                        songbird = None;
+                    }
+                    state("error", &message);
                 }
             }
         }
     }
 
     // La card se fue: devolver las salidas de las apps y salir del canal antes de terminar.
-    drop(mix);
-    let _ = mix_thread.join();
     if let (Some(t), Some(sb)) = (tx.take(), songbird.as_ref()) {
         let _ = sb.remove(t.guild).await;
-        let _ = t.stop.send(());
     }
+    drop(mix);
+    let _ = mix_thread.join();
 }

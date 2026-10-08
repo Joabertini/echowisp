@@ -27,6 +27,7 @@ pub enum PHit {
     Color(u8),
     Preset(u8, usize),
     Msg(&'static str),
+    MixError,
     App(usize),
     Sw(usize),
     Vol(usize),
@@ -34,8 +35,6 @@ pub enum PHit {
     Invite,
     ShowDsc,
     Token,
-    Device(usize),
-    AllDevices,
     Browser(usize),
     Hotkey(usize),
     Report,
@@ -61,7 +60,7 @@ pub const EDITABLE: &[(i32, &str)] = &[
 // Paletas rapidas (COLORREF); el campo hex permite cualquier otro color.
 const PRESET_SOLID: [u32; 7] = [rgb(0, 0, 0), rgb(0x0d, 0x0f, 0x14), rgb(0x0b, 0x12, 0x20), rgb(0x1a, 0x0f, 0x14), rgb(0x0c, 0x15, 0x11), rgb(0x1f, 0x1f, 0x22), rgb(0xf4, 0xf1, 0xea)];
 const PRESET_ACCENT: [u32; 7] = [rgb(0x63, 0x66, 0xf1), rgb(0x8b, 0x5c, 0xf6), rgb(0xec, 0x48, 0x99), rgb(0xf9, 0x73, 0x16), rgb(0x22, 0xc5, 0x5e), rgb(0x06, 0xb6, 0xd4), rgb(0xea, 0xb3, 0x08)];
-const SECTIONS: [&str; 6] = ["EN LA CARD", "APARIENCIA", "BOT DE DISCORD", "ENTRADA DEL PUENTE", "NAVEGADOR", "ATAJOS"];
+const SECTIONS: [&str; 6] = ["EN LA CARD", "APARIENCIA", "BOT DE DISCORD", "CAPTURA POR APP", "NAVEGADOR", "ATAJOS"];
 
 /// Dos colores casi iguales (para marcar un circulo que se confundiria con el fondo).
 fn lum_close(a: u32, b: u32) -> bool {
@@ -126,11 +125,11 @@ impl App {
         let row = |h: PHit, l: i32, r: i32, top: i32, b: i32, v: &mut Vec<(PHit, RECT)>| v.push((h, RECT { left: l, top, right: r, bottom: b }));
         match self.panel {
             Panel::Apps => {
-                if !self.mix_cable {
-                    row(PHit::Msg("Falta VB-Cable (CABLE Input)"), 12, PW - 12, y, y + P_ROW, &mut v);
+                if !self.mix_available {
+                    row(PHit::Msg("Captura por app no disponible"), 12, PW - 12, y, y + P_ROW, &mut v);
                     y += P_ROW;
                 } else if self.mix_apps.is_empty() {
-                    row(PHit::Msg("Ninguna app está sonando"), 12, PW - 12, y, y + P_ROW, &mut v);
+                    row(PHit::Msg("Sin salida compartida activa"), 12, PW - 12, y, y + P_ROW, &mut v);
                     y += P_ROW;
                 } else {
                     for (i, a) in self.mix_apps.iter().enumerate() {
@@ -142,6 +141,10 @@ impl App {
                             y += P_VOL;
                         }
                     }
+                }
+                if !self.mix_err.is_empty() {
+                    row(PHit::MixError, 12, PW - 12, y, y + P_ROW * 3, &mut v);
+                    y += P_ROW * 3;
                 }
             }
             Panel::Config => {
@@ -184,22 +187,7 @@ impl App {
                         }
                     }
                     head(3, &mut y, &mut v);
-                    if open(3) {
-                        // Por defecto solo cables virtuales y la elegida: Voicemeeter y microfonos alargan la lista.
-                        let mut hidden = 0;
-                        for (i, d) in self.br_devices.iter().enumerate() {
-                            if self.cfg_all_dev || d.starts_with("CABLE") || *d == self.br_device {
-                                row(PHit::Device(i), 12, PW - 12, y, y + P_ROW, &mut v);
-                                y += P_ROW;
-                            } else {
-                                hidden += 1;
-                            }
-                        }
-                        if hidden > 0 || self.cfg_all_dev {
-                            row(PHit::AllDevices, 12, PW - 12, y, y + P_ROW, &mut v);
-                            y += P_ROW;
-                        }
-                    }
+                    if open(3) { row(PHit::Msg("Audio de apps · sin cable virtual"), 12, PW - 12, y, y + P_ROW, &mut v); y += P_ROW; }
                 }
                 head(4, &mut y, &mut v);
                 if open(4) {
@@ -326,10 +314,8 @@ impl App {
         self.panel_target = 1.0;
         unsafe {
             if p == Panel::Apps {
+                // Una vez al abrir; despues el puente avisa solo cuando cambia algo.
                 self.mix_send(json!({ "cmd": "apps" }));
-                SetTimer(self.hwnd, T_MIX, 2000, None);
-            } else {
-                KillTimer(self.hwnd, T_MIX);
             }
             SetTimer(self.hwnd, T_PANEL, 15, None);
         }
@@ -346,7 +332,6 @@ impl App {
         self.panel_capture = None;
         self.panel_last = Instant::now();
         unsafe {
-            KillTimer(self.hwnd, T_MIX);
             SetTimer(self.hwnd, T_PANEL, 15, None);
         }
         self.invalidate();
@@ -361,7 +346,6 @@ impl App {
         self.mix_sel = None;
         unsafe {
             KillTimer(self.hwnd, T_PANEL);
-            KillTimer(self.hwnd, T_MIX);
             ShowWindow(self.panel_hwnd, SW_HIDE);
         }
     }
@@ -530,12 +514,11 @@ impl App {
                         let k = (sb - st) / 2.0 - self.pf(2.5);
                         cv.dot(if on { sr - (sb - st) / 2.0 } else { sl + (sb - st) / 2.0 }, (st + sb) / 2.0, k, th().ink);
                     }
-                    PHit::App(_) | PHit::Device(_) | PHit::AllDevices | PHit::Browser(_) | PHit::Hotkey(_) => {
+                    PHit::App(_) | PHit::Browser(_) | PHit::Hotkey(_) => {
                         if hov == hit || self.panel_capture.is_some_and(|c| hit == PHit::Hotkey(c)) {
                             cv.round(l, t, rr, b, self.pf(8.0), th().hover);
                         }
                         let sel = match hit {
-                            PHit::Device(i) => Some(self.br_devices[i] == self.br_device),
                             PHit::Browser(i) => Some(self.browsers[i].1 == self.browser_cur),
                             _ => None,
                         };
@@ -579,6 +562,7 @@ impl App {
                         cv.text(self.f.small, &val, RECT { right: z.right - self.px(32), ..z }, c, DT_RIGHT);
                     }
                     PHit::Msg(t) => cv.text(self.f.small, t, z, th().dim, DT_CENTER),
+                    PHit::MixError => cv.text_wrap(self.f.small, &self.mix_err, z, RED),
                     PHit::App(i) => {
                         let a = &self.mix_apps[i];
                         cv.text(self.f.small, &a.name, RECT { left: z.left + self.px(10), ..z }, if a.on { th().ink } else { th().dim }, DT_LEFT);
@@ -632,8 +616,6 @@ impl App {
                         let t = if self.rep.sending { "Enviando…" } else { "Enviar" };
                         cv.text(self.f.small, t, z, if self.rep.ready() || self.rep.sending { th().ink } else { th().dim }, DT_CENTER);
                     }
-                    PHit::Device(i) => cv.text(self.f.small, short_dev(&self.br_devices[i]), inset, th().ink, DT_LEFT),
-                    PHit::AllDevices => cv.text(self.f.small, if self.cfg_all_dev { "Mostrar solo cables" } else { "Mostrar todas las entradas" }, inset, th().dim, DT_LEFT),
                     PHit::Browser(i) => cv.text(self.f.small, &self.browsers[i].0, inset, th().ink, DT_LEFT),
                     PHit::Hotkey(i) => {
                         let (id, name) = EDITABLE[i];
@@ -680,8 +662,7 @@ impl App {
             }
             PHit::Sw(i) => {
                 let a = &mut self.mix_apps[i];
-                a.on = !a.on; // optimista: la lista que vuelve confirma lo que dejo Windows
-                let v = json!({ "cmd": "route", "pid": a.pid, "on": a.on });
+                let v = json!({ "cmd": "route", "pid": a.pid, "on": !a.on });
                 self.mix_send(v);
             }
             PHit::Vol(i) => {
@@ -724,13 +705,6 @@ impl App {
             PHit::Invite => {
                 self.mix_send(json!({ "cmd": "invite" }));
                 self.flash("Abriendo la invitación en el navegador");
-            }
-            PHit::AllDevices => self.cfg_all_dev = !self.cfg_all_dev,
-            PHit::Device(i) => {
-                self.br_device = self.br_devices[i].clone();
-                if self.br_busy() {
-                    self.flash("La entrada nueva se usa al reconectar");
-                }
             }
             PHit::Browser(i) => {
                 let p = self.browsers[i].1.clone();

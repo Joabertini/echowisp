@@ -1,12 +1,14 @@
-// ytm-bridge: transmite un dispositivo de entrada (el cable virtual donde sale Pocket Bard) a un
-// canal de voz de Discord como bot. Reemplazo liviano de Kenku FM; los jugadores regulan el
-// volumen del bot como siempre. Voz con DAVE (E2EE) via songbird.
+// ytm-bridge: captura apps elegidas por process loopback y mezcla su audio para transmitirlo a
+// un canal de voz de Discord como bot. Voz con DAVE (E2EE) via songbird.
 //
 // Lo lanza la card (`ytm-bridge serve`) y hablan por lineas JSON: ver serve.rs.
 // Token y ultima seleccion en %LOCALAPPDATA%\ytm-float\bridge.json.
-mod capture;
+mod audio_probe;
+mod audio_mix;
 mod mixer;
+mod process_capture;
 mod serve;
+mod sim;
 
 use base64::Engine as _;
 use std::{num::NonZeroU64, path::PathBuf};
@@ -24,5 +26,19 @@ fn bot_id(token: &str) -> Option<NonZeroU64> {
 
 #[tokio::main]
 async fn main() {
+    if std::env::args().nth(1).as_deref() == Some("audio-probe") {
+        if let Err(e) = audio_probe::run(std::env::args().skip(2)) {
+            eprintln!("audio-probe: {e}");
+            std::process::exit(1);
+        }
+        return;
+    }
+    if std::env::args().nth(1).as_deref() == Some("simular") {
+        if let Err(e) = sim::run(std::env::args().skip(2)) {
+            eprintln!("simular: {e}");
+            std::process::exit(1);
+        }
+        return;
+    }
     serve::serve().await;
 }

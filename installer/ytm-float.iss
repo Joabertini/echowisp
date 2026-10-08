@@ -34,7 +34,7 @@ Name: "custom"; Description: "Elegir"; Flags: iscustom
 [Components]
 Name: "musica"; Description: "Card de YouTube Music"; Types: full musica custom; Flags: fixed
 Name: "discord"; Description: "Discord en una ventana al costado de la card (la de Discord, sin modificar)"; Types: full
-Name: "puente"; Description: "Puente a Discord (reemplaza Kenku FM: cable virtual → bot)"; Types: full
+Name: "puente"; Description: "Puente a Discord (audio de apps → bot, sin cable virtual)"; Types: full
 
 [Tasks]
 Name: "inicio"; Description: "Abrir con Windows"; Flags: unchecked
