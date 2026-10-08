@@ -20,7 +20,8 @@ Funciona con el Brave del usuario cerrado. Prioridad: recursos mínimos y fluide
   evento `yt-navigate` (sin recargar, ~250 ms; plan B recarga), controles por clic en la barra del
   reproductor, estado por `navigator.mediaSession` + `repeat-mode` del `ytmusic-player-bar`.
 - `src/report.rs` — "Reportar un problema" (al pie de Configuración): texto + mail opcional + datos
-  técnicos opcionales (Windows y final de `engine.log` sin la carpeta del usuario). POST por WinHTTP a
+  técnicos opcionales (Windows y final de `engine.log` sin la carpeta del usuario; si la sesión es corta,
+  completa con `engine.prev.log`). `engine.log` es por sesión: al arrancar pasa a `engine.prev.log`. POST por WinHTTP a
   `reportes.bertinilabs.xyz/v1/reporte` en un hilo; vuelve como `WM_REPORT`. El servidor guarda y reenvía.
 
 ## Decisiones (con motivo)
