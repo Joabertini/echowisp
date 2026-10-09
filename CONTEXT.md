@@ -25,8 +25,8 @@ Funciona con el Brave del usuario cerrado. Prioridad: recursos mínimos y fluide
   `reportes.bertinilabs.xyz/v1/reporte` en un hilo; vuelve como `WM_REPORT`. El servidor guarda y reenvía.
 
 ## Decisiones (con motivo)
-- **No reproducir el audio en nativo** (opción C): YouTube corta la descarga sin token PoToken; el
-  clasificador de permisos frenó el intento de evadirlo. Se usa el reproductor oficial en Brave.
+- **Reproducción solo con el reproductor oficial** (opción C): el audio lo reproduce la página de
+  YouTube Music en un navegador real. No se descarga ni se decodifica el audio por fuera del sitio.
 - **Sin extensión**: Brave no permite instalar extensiones fuera de la tienda en silencio; CDP alcanza.
 - **Flags de Brave**: `--headless=new --single-process --disable-gpu --in-process-gpu
   --js-flags=--lite-mode --blink-settings=imagesEnabled=false --autoplay-policy=no-user-gesture-required`.
