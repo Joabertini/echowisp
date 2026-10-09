@@ -208,19 +208,17 @@ pub fn launch_headless(exe: &Path) -> io::Result<(Proc, u16)> {
         "--remote-debugging-port=0",
         "--no-first-run",
         "--no-default-browser-check",
-        // Todo en un proceso: ahorra ~70 MB frente al modelo multiproceso.
-        "--single-process",
+        // Modelo de procesos normal (sandbox + aislamiento por sitio). --single-process ahorraba
+        // ~59 MB privados reproduciendo (243 vs 302, medido 09-10) a costa de correr la página sin sandbox.
         "--disable-gpu",
-        "--in-process-gpu",
         "--js-flags=--lite-mode",
         "--disable-extensions",
         // Sin --disable-component-update ni --disable-background-networking: Brave Shields
         // necesita bajar y actualizar sus listas de filtros (con esos flags no bloqueaba nada).
         "--disable-sync",
         "--disable-default-apps",
-        "--disable-features=IsolateOrigins,site-per-process,Translate,MediaRouter,OptimizationHints,\
-BackForwardCache,SpareRendererForSitePerProcess,AudioServiceOutOfProcess,PaintHolding",
-        "--enable-features=NetworkServiceInProcess2",
+        "--disable-features=Translate,MediaRouter,OptimizationHints,BackForwardCache,\
+SpareRendererForSitePerProcess,PaintHolding",
         "--blink-settings=imagesEnabled=false",
         "--autoplay-policy=no-user-gesture-required",
         "about:blank",
@@ -274,6 +272,8 @@ pub fn launch_discord(exe: &Path, x: i32, y: i32, w: i32, h: i32) -> io::Result<
         // WebAssembly, y Discord cifra la voz de punta a punta con WebAssembly (la voz quedaba en
         // bucle autenticando/desconectado).
         "--disable-gpu".into(),
+        // Medido en reposo: 749 → 696 MB, sin tocar el aislamiento ni la voz.
+        "--enable-low-end-device-mode".into(),
         "--disable-features=Translate,MediaRouter,OptimizationHints,BackForwardCache,SpareRendererForSitePerProcess,PaintHolding".into(),
         format!("--window-position={x},{y}"),
         format!("--window-size={w},{h}"),
