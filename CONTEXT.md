@@ -94,6 +94,11 @@ Funciona con el Brave del usuario cerrado. Prioridad: recursos mínimos y fluide
   antes de elegir la app. Tono de prueba y scripts fuera del repo (`notas/tono/`).
 - `bridge.log` en `%LOCALAPPDATA%\echowisp\` (anterior: `bridge.prev.log`): estados, errores y
   contadores de la mezcla cada 10 s. Sin token.
+- Token del bot en `bridge.json`: `token_dpapi` contiene base64 de DPAPI con ámbito de usuario,
+  sin interfaz. El puente migra `token` en claro al cargar y reemplaza el archivo mediante
+  `bridge.json.tmp` + renombre. Si no puede descifrarlo en otra cuenta o PC, avisa a la card y
+  queda sin token. Configuración → Bot de Discord → Desvincular bot sale del canal, cierra el
+  gateway y borra el token persistido.
 - Medido en vivo (19045, 1 fuente): sin cortes, CPU ~0,1 %, 19 MB. Falta Win11 y 3 fuentes.
 - Compilar para iterar: `cargo build --profile rapido` (sin LTO, ~30 s; release con LTO tarda
   20 min con poca RAM). Sin cmake en el PATH, `LIBOPUS_LIB_DIR` = `out` de libopus_sys en
