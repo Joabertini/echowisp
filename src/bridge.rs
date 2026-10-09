@@ -1,4 +1,4 @@
-// Puente de audio a Discord (ytm-bridge.exe, modulo opcional junto al exe): la card lo lanza como
+// Puente de audio a Discord (echowisp-bridge.exe, modulo opcional junto al exe): la card lo lanza como
 // hijo y le habla por lineas JSON (protocolo en bridge/src/serve.rs). Sin el exe, no hay seccion.
 use serde_json::Value;
 use std::{
@@ -19,7 +19,7 @@ pub struct Bridge {
 
 impl Bridge {
     pub fn start(hwnd: isize) -> Option<Bridge> {
-        let exe = std::env::current_exe().ok()?.with_file_name("ytm-bridge.exe");
+        let exe = std::env::current_exe().ok()?.with_file_name("echowisp-bridge.exe");
         if !exe.exists() {
             return None;
         }

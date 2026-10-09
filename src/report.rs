@@ -111,7 +111,7 @@ fn log_tail() -> String {
 
 pub fn body(f: &Form) -> Value {
     let mut b = json!({
-        "app": "ytm-float",
+        "app": "echowisp",
         "version": env!("CARGO_PKG_VERSION"),
         "texto": f.text.trim(),
         "contacto": f.contact.trim(),
@@ -151,7 +151,7 @@ unsafe fn post(body: &str) -> Result<u32, ()> {
         }
     }
     let ok = |h: *mut core::ffi::c_void| if h.is_null() { Err(()) } else { Ok(H(h)) };
-    let agent = wide(concat!("ytm-float/", env!("CARGO_PKG_VERSION")));
+    let agent = wide(concat!("echowisp/", env!("CARGO_PKG_VERSION")));
     let ses = ok(WinHttpOpen(agent.as_ptr(), WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY, null(), null(), 0))?;
     WinHttpSetTimeouts(ses.0, 10_000, 10_000, 15_000, 15_000);
     let con = ok(WinHttpConnect(ses.0, wide(HOST).as_ptr(), INTERNET_DEFAULT_HTTPS_PORT, 0))?;

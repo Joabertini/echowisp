@@ -80,7 +80,7 @@ impl Levels {
 }
 
 pub fn run(mut args: impl Iterator<Item = String>) -> Result<(), String> {
-    let usage = "uso: ytm-bridge audio-probe --pid <PID> [--seconds 5] [--post-volume]";
+    let usage = "uso: echowisp-bridge audio-probe --pid <PID> [--seconds 5] [--post-volume]";
     let mut pid = None;
     let mut seconds = 5;
     let mut post_volume = false;

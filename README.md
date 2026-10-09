@@ -1,9 +1,9 @@
-# ytm-float
+# Echowisp
 
-Reproductor flotante de YouTube Music para Windows 10. Un exe Win32 en Rust (~270 KB, ~2 MB de RAM)
+Reproductor flotante de YouTube Music para Windows 10, con puente de audio a Discord para partidas de rol (antes YTM Float). Un exe Win32 en Rust (~270 KB, ~2 MB de RAM)
 controla un navegador Chromium invisible (headless, perfil propio) por CDP. Los anuncios los saca la app.
 
-Descarga: [bertinilabs.xyz/ytm-float](https://www.bertinilabs.xyz/ytm-float/). Licencia MIT.
+Descarga: [bertinilabs.xyz/echowisp](https://www.bertinilabs.xyz/echowisp/). Licencia MIT.
 
 ## Instalador
 
@@ -46,12 +46,12 @@ Una app sin sesión de audio compartida activa (incluido el modo exclusivo), una
 con volumen cero, o un árbol que se solapa con Discord u otra fuente produce un error visible; el
 puente no cambia a captura global. Probado en Windows 10 22H2; falta Windows 11.
 
-Si algo suena mal, `%LOCALAPPDATA%\ytm-float\bridge.log` registra estados, errores y cada 10 s los
+Si algo suena mal, `%LOCALAPPDATA%\echowisp\bridge.log` registra estados, errores y cada 10 s los
 contadores de la mezcla.
 
 ## Uso
 
-- Acceso directo: escritorio y menú Inicio → **YTM Float**. Instalado en `%LOCALAPPDATA%\Programs\ytm-float\`.
+- Acceso directo: menú Inicio → **Echowisp** (el de escritorio de YTM Float, si existía, se reemplaza). Instalado en `%LOCALAPPDATA%\Programs\echowisp\`.
 - Primera vez: ícono de usuario (ámbar) → se abre Brave una sola vez → iniciar sesión en Google → cerrar esa ventana.
 - Escribir busca · Enter reproduce · Shift+Enter radio · ↑/↓ elige · Esc limpia · Espacio (buscador vacío) play/pausa · Ctrl+V pega.
 - Clic en la barra: salta a ese punto. Arrastrar desde el título mueve la ventana (recuerda la posición).
@@ -78,12 +78,12 @@ En juegos: usar "pantalla completa en ventana" / sin bordes. En pantalla complet
 
 ```
 cargo build --release
-copy target\release\ytm-float.exe %LOCALAPPDATA%\Programs\ytm-float\
+copy target\release\echowisp.exe %LOCALAPPDATA%\Programs\echowisp\
 ```
 
-Cerrar ytm-float antes (el exe en uso no se puede reemplazar).
+Cerrar Echowisp antes (el exe en uso no se puede reemplazar).
 
-## Archivos de datos (`%LOCALAPPDATA%\ytm-float\`)
+## Archivos de datos (`%LOCALAPPDATA%\echowisp\`)
 
 - `perfil\` — perfil dedicado del navegador (sesión de Google).
 - `pos.txt` — posición de la ventana. `brave.pid` — para cerrar un Brave huérfano.

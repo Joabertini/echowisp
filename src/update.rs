@@ -15,7 +15,8 @@ use windows_sys::Win32::{
 };
 
 pub const WM_UPDATE: u32 = WM_APP + 5;
-const MANIFEST: &str = "https://www.bertinilabs.xyz/ytm-float/version.json";
+// Las 0.4.x leen /ytm-float/version.json: al publicar, actualizar los dos (apuntan al mismo instalador).
+const MANIFEST: &str = "https://www.bertinilabs.xyz/echowisp/version.json";
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
 /// Lo que llega a la card por WM_UPDATE (lparam = Box<Msg>).
@@ -24,6 +25,8 @@ pub enum Msg {
     Progress(u32), // porcentaje
     Failed(String),
     Launched, // el instalador quedo corriendo: la card tiene que cerrarse
+    UpToDate,
+    Offline, // no se pudo leer el manifiesto (sin conexion o sitio caido)
 }
 
 #[derive(Clone)]
@@ -33,9 +36,11 @@ pub struct Info {
     sha256: String,
 }
 
-/// Estado del boton en Configuracion.
+/// Estado de la fila de version en Configuracion.
 pub enum State {
-    None,
+    None, // consultando el manifiesto
+    Current,
+    Unknown, // sin conexion: tocar reintenta
     Ready(Info),
     Busy(u32, Info),
     Error(String, Info),
@@ -60,14 +65,12 @@ fn parse(manifest: &Value) -> Option<Info> {
     (info.url.starts_with("https://") && info.sha256.len() == 64).then_some(info)
 }
 
-/// Al arrancar, en un hilo: si hay version nueva avisa con Msg::Available. Sin conexion, silencio.
+/// Al arrancar, en un hilo: avisa si hay version nueva, si esta al dia o si no se pudo consultar.
 pub fn check(hwnd: isize) {
     std::thread::spawn(move || {
-        let Ok(body) = (unsafe { get(MANIFEST, &mut |_, _| {}) }) else { return };
-        let Some(info) = serde_json::from_slice::<Value>(&body).ok().as_ref().and_then(parse) else { return };
-        if newer(&info.version, env!("CARGO_PKG_VERSION")) {
-            post(hwnd, Msg::Available(info));
-        }
+        let Ok(body) = (unsafe { get(MANIFEST, &mut |_, _| {}) }) else { return post(hwnd, Msg::Offline) };
+        let Some(info) = serde_json::from_slice::<Value>(&body).ok().as_ref().and_then(parse) else { return post(hwnd, Msg::Offline) };
+        post(hwnd, if newer(&info.version, env!("CARGO_PKG_VERSION")) { Msg::Available(info) } else { Msg::UpToDate });
     });
 }
 
@@ -90,7 +93,7 @@ pub fn install(hwnd: isize, info: Info, browser: PathBuf) {
         if sha256_hex(&data).as_deref() != Some(info.sha256.as_str()) {
             return post(hwnd, Msg::Failed("La descarga llegó dañada: probá de nuevo".into()));
         }
-        let setup = std::env::temp_dir().join(format!("ytm-float-setup-{}.exe", info.version));
+        let setup = std::env::temp_dir().join(format!("echowisp-setup-{}.exe", info.version));
         if std::fs::write(&setup, &data).is_err() {
             return post(hwnd, Msg::Failed("No pude guardar el instalador".into()));
         }
@@ -127,7 +130,7 @@ unsafe fn get(url: &str, progress: &mut dyn FnMut(usize, usize)) -> Result<Vec<u
     let ok = |h: *mut core::ffi::c_void| if h.is_null() { Err(OFFLINE.to_string()) } else { Ok(H(h)) };
     let rest = url.strip_prefix("https://").ok_or("URL inválida")?;
     let (host, path) = rest.split_once('/').map(|(h, p)| (h, format!("/{p}"))).unwrap_or((rest, "/".into()));
-    let agent = wide(concat!("ytm-float/", env!("CARGO_PKG_VERSION")));
+    let agent = wide(concat!("echowisp/", env!("CARGO_PKG_VERSION")));
     let ses = ok(WinHttpOpen(agent.as_ptr(), WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY, null(), null(), 0))?;
     WinHttpSetTimeouts(ses.0, 10_000, 10_000, 15_000, 30_000);
     let con = ok(WinHttpConnect(ses.0, wide(host).as_ptr(), INTERNET_DEFAULT_HTTPS_PORT, 0))?;

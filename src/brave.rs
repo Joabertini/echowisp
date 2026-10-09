@@ -1,5 +1,5 @@
 // Lanza Brave con un perfil propio. Cada proceso va dentro de un Job object con
-// KILL_ON_JOB_CLOSE: si ytm-float muere (aunque sea por crash), Brave muere con el.
+// KILL_ON_JOB_CLOSE: si echowisp muere (aunque sea por crash), Brave muere con el.
 use std::{
     ffi::OsStr,
     io::{self, Read, Write},
@@ -24,8 +24,19 @@ pub fn wide(s: &str) -> Vec<u16> {
     OsStr::new(s).encode_wide().chain(Some(0)).collect()
 }
 
+/// %LOCALAPPDATA%\echowisp. Hasta 0.4.0 era ytm-float: se mueve una vez al arrancar (sesiones, bot, ajustes).
+/// Si no se puede mover (algo la tiene abierta), se usa la vieja y se reintenta en el proximo arranque.
 pub fn data_dir() -> PathBuf {
-    PathBuf::from(std::env::var("LOCALAPPDATA").unwrap_or_else(|_| ".".into())).join("ytm-float")
+    static DIR: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+    DIR.get_or_init(|| {
+        let base = PathBuf::from(std::env::var("LOCALAPPDATA").unwrap_or_else(|_| ".".into()));
+        let (new, old) = (base.join("echowisp"), base.join("ytm-float"));
+        if !new.exists() && old.exists() && std::fs::rename(&old, &new).is_err() {
+            return old;
+        }
+        new
+    })
+    .clone()
 }
 
 fn profile_dir() -> PathBuf {

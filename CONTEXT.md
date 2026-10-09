@@ -1,4 +1,4 @@
-# CONTEXT — ytm-float (al 04-10-2026)
+# CONTEXT — Echowisp, antes YTM Float (al 08-10-2026)
 
 ## Objetivo
 Reproductor flotante hiperliviano de YouTube Music (cuenta gratuita, sin Premium), estética oscura
@@ -50,8 +50,9 @@ Funciona con el Brave del usuario cerrado. Prioridad: recursos mínimos y fluide
   mute de YTM no sobrevive al reinicio). La card no muestra "Iniciando" (`quiet`). Pruebas:
   `window.__ytmRecycleMs = 0` por CDP.
 - Arranque del navegador: espera hasta 40 s el `DevToolsActivePort` (tras actualizarse tarda más de 15).
-- **Actualizar desde la card** (`update.rs`): al arrancar lee `www.bertinilabs.xyz/ytm-float/version.json`
-  (`{version, url, sha256}`); si hay una más nueva, Configuración muestra "Actualizar a X". Baja el instalador
+- **Actualizar desde la card** (`update.rs`): al arrancar lee `www.bertinilabs.xyz/echowisp/version.json`
+  (`{version, url, sha256}`). Configuración siempre muestra la fila de versión: "buscando novedades", "al día",
+  "sin conexión (reintentar)" o el botón "Actualizar a X". Baja el instalador
   por WinHTTP (sin la marca de internet: SmartScreen no lo frena), verifica SHA-256 (BCrypt), lo corre con
   `/VERYSILENT /RELANZAR=1 /NAVEGADOR=<actual>` tras ~2 s (cmd + ping: la card tiene que cerrarse antes por el
   AppMutex) y el instalador reabre la card. **Al publicar una versión: subir el exe y actualizar version.json.**
@@ -60,9 +61,9 @@ Funciona con el Brave del usuario cerrado. Prioridad: recursos mínimos y fluide
 - `DrawTextW` con string vacío revienta (puntero de Vec vacío) → se saltea.
 - Estantes de portada (`browse FEmusic_home`): se buscan por título es/en ("Vuelve a escucharlo",
   "Selecciones rápidas") siguiendo `nextContinuationData`; los rápidos vienen en la 2ª página (medido 05-10).
-- Ctrl+Alt+M lo tiene registrado otra app del usuario (medido 05-10 con ytm-float cerrado) → ocultar
+- Ctrl+Alt+M lo tiene registrado otra app del usuario (medido 05-10 con la card cerrada) → ocultar
   pasó a Ctrl+Alt+H y colapsar a Ctrl+Alt+N. Atajos que no se registran quedan en `engine.log`.
-- Nombre en el Administrador de tareas: recurso de versión (`ytm-float.rc`, `FileDescription`) compilado
+- Nombre en el Administrador de tareas: recurso de versión (`echowisp.rc`, `FileDescription`) compilado
   por `build.rs` con `embed-resource` (solo build-dep; usa rc.exe del Windows SDK). Brave headless es hijo
   directo, así que se agrupa debajo.
 - Volumen por `movie_player.setVolume/mute` (sincroniza con la UI de YTM), no `video.volume`.
@@ -87,17 +88,17 @@ Funciona con el Brave del usuario cerrado. Prioridad: recursos mínimos y fluide
   `ruteo.json` v2; se restaura al deseleccionar, leave, fallo, EOF y al reabrir tras cierre forzado.
   Cambio de volumen desde Windows → se detiene esa fuente y no se pisa (probado, es lo esperado).
   Revisión de apps cada 1 s; la lista se emite a la card solo si cambió.
-- **Probar el audio antes de pedir prueba en vivo**: `ytm-bridge simular --pid N [--secs S]
+- **Probar el audio antes de pedir prueba en vivo**: `echowisp-bridge simular --pid N [--secs S]
   [--espera S] [--out f.raw]` lee por el mismo camino que songbird (RawAdapter → decodificador, un
   paquete cada 20 ms) y cuenta saltos/silencio en un tono. `--espera` reproduce el bot conectado
   antes de elegir la app. Tono de prueba y scripts fuera del repo (`notas/tono/`).
-- `bridge.log` en `%LOCALAPPDATA%\ytm-float\` (anterior: `bridge.prev.log`): estados, errores y
+- `bridge.log` en `%LOCALAPPDATA%\echowisp\` (anterior: `bridge.prev.log`): estados, errores y
   contadores de la mezcla cada 10 s. Sin token.
 - Medido en vivo (19045, 1 fuente): sin cortes, CPU ~0,1 %, 19 MB. Falta Win11 y 3 fuentes.
 - Compilar para iterar: `cargo build --profile rapido` (sin LTO, ~30 s; release con LTO tarda
   20 min con poca RAM). Sin cmake en el PATH, `LIBOPUS_LIB_DIR` = `out` de libopus_sys en
   `target/release/build/` + `LIBOPUS_STATIC=1`.
-- `ytm-bridge audio-probe`: diagnóstico sin Discord. `IAudioClient2` no existe en process
+- `echowisp-bridge audio-probe`: diagnóstico sin Discord. `IAudioClient2` no existe en process
   loopback (no pedir `POST_VOLUME_LOOPBACK`).
 - Exe: ~270 KB; ~2 MB privados. Brave: 2 procesos, ~180–245 MB reproduciendo; CPU ~0,2 %.
 
@@ -106,3 +107,10 @@ Funciona con el Brave del usuario cerrado. Prioridad: recursos mínimos y fluide
 - Arranque con Windows (opcional, preguntar).
 - Reacomodar con DPI por monitor (`WM_DPICHANGED`).
 - Una isla pegada arriba fue descartada: se prefirió flotante arrastrable.
+
+## Renombre a Echowisp (0.5.0, 08-10)
+- "YTM" es marca de Google. Exes: `echowisp.exe`, `echowisp-bridge.exe`. Datos: `%LOCALAPPDATA%\echowisp`.
+- Migración: `brave::data_dir()` mueve `ytm-float` → `echowisp` una vez; si falla, usa la vieja y reintenta. El puente
+  usa la que exista. Instalador: mismo AppId, `UsePreviousAppDir=no`, borra `Programs\ytm-float` y accesos viejos;
+  AppMutex con los dos nombres.
+- **Al publicar: actualizar `/echowisp/version.json` y `/ytm-float/version.json`** (las 0.4.x leen el viejo).

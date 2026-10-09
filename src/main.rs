@@ -39,7 +39,7 @@ const Y_VOL: i32 = 114;
 const Y_SRCH: i32 = 140;
 const Y_TABS: i32 = 182;
 const H_BASE: i32 = 230;
-const Y_BR: i32 = 226; // seccion del puente a Discord (solo con ytm-bridge.exe instalado)
+const Y_BR: i32 = 226; // seccion del puente a Discord (solo con echowisp-bridge.exe instalado)
 const ROW: i32 = 40;
 const MAX_ROWS: usize = 8;
 
@@ -358,7 +358,7 @@ struct App {
     hover: Hit,
     tracking: bool,
     seq: u32,
-    // puente a Discord (None si ytm-bridge.exe no esta)
+    // puente a Discord (None si echowisp-bridge.exe no esta)
     br: Option<bridge::Bridge>,
     mix_apps: Vec<MixApp>,
     mix_available: bool,
@@ -1665,9 +1665,9 @@ fn main() {
             let _ = std::fs::write(brave::data_dir().join("panic.txt"), i.to_string());
         }));
         // Una sola instancia: dos se pelearian por el mismo perfil de Brave.
-        CreateMutexW(null(), 0, wide("ytm-float-instancia").as_ptr());
+        CreateMutexW(null(), 0, wide("echowisp-instancia").as_ptr());
         if GetLastError() == ERROR_ALREADY_EXISTS {
-            let w = FindWindowW(wide("ytm-float").as_ptr(), null());
+            let w = FindWindowW(wide("echowisp").as_ptr(), null());
             if !w.is_null() {
                 show(w, true);
             }
@@ -1677,7 +1677,7 @@ fn main() {
         SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_SYSTEM_AWARE);
         let scale = GetDpiForSystem() as f32 / 96.0;
         let hinst = GetModuleHandleW(null());
-        let cls = wide("ytm-float");
+        let cls = wide("echowisp");
         let wc = WNDCLASSW {
             lpfnWndProc: Some(wndproc),
             hInstance: hinst,
