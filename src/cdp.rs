@@ -131,6 +131,10 @@ Sec-WebSocket-Key: {key}\r\nSec-WebSocket-Version: 13\r\n\r\n"
         }
     }
     verify_accept(&key, accept.as_deref())?;
+    // El timeout de lectura cubre solo el handshake: después el bucle de eventos espera sin límite
+    // (en pausa puede no llegar nada por minutos; con 30 s la sesión se reiniciaba, os error 10060).
+    s.set_read_timeout(None)?;
+    r.get_ref().set_read_timeout(None)?;
     Ok((Ws { w: Mutex::new(s) }, r))
 }
 
