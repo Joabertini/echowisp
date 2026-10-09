@@ -89,3 +89,32 @@ Antes de publicar, `scripts/notices.ps1`.
 - `perfil\` — perfil dedicado del navegador (sesión de Google).
 - `pos.txt` — posición de la ventana. `brave.pid` — para cerrar un Brave huérfano.
 - `engine.log` — errores de sesión CDP. `panic.txt` — último panic de Rust.
+- `perfil-discord\` — sesión de Discord web (módulo Discord). `bridge.json` — token del bot y última
+  selección (módulo puente). `ruteo.json` — volumen original de las apps enviadas.
+
+Desinstalar no borra esta carpeta: para borrar sesiones y token, eliminarla a mano.
+
+## Privacidad
+
+Echowisp no tiene telemetría ni cuentas propias. Se conecta a:
+
+- **YouTube Music y Google**, desde el navegador, con tu sesión (como cualquier navegador).
+- **Discord**, si usás esos módulos: la ventana es Discord web; el puente usa tu bot.
+- **www.bertinilabs.xyz**, al abrir: lee `echowisp/version.json` para saber si hay una versión nueva.
+  No manda datos tuyos; el servidor ve la IP como en cualquier visita.
+- **reportes.bertinilabs.xyz**, solo si tocás "Reportar un problema": manda el texto que escribís,
+  el mail si lo dejás y, si lo marcás, datos técnicos (versión de Windows y el final del log, sin la
+  carpeta del usuario). Se guarda en el servidor (Cloudflare) y le llega al desarrollador por un canal
+  privado de Discord. Se usa solo para resolver el problema.
+
+## Code signing policy
+
+Política de firma de código. Los binarios publicados se compilan con
+[`.github/workflows/release.yml`](.github/workflows/release.yml) desde este repositorio. Free code
+signing provided by [SignPath.io](https://signpath.io), certificate by
+[SignPath Foundation](https://signpath.org) (solicitado; hasta que se apruebe, los instaladores van sin firmar).
+
+- Autores (committers) y revisores: [Joabertini](https://github.com/Joabertini).
+- Aprobadores de cada firma: [Joabertini](https://github.com/Joabertini).
+
+Cada release se aprueba a mano. Privacidad: ver la sección de arriba.
