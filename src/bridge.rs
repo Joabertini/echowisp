@@ -1,9 +1,10 @@
 // Puente de audio a Discord (echowisp-bridge.exe, modulo opcional junto al exe): la card lo lanza como
 // hijo y le habla por lineas JSON (protocolo en bridge/src/serve.rs). Sin el exe, no hay seccion.
+use crate::brave::Job;
 use serde_json::Value;
 use std::{
     io::{BufRead, BufReader, Write},
-    os::windows::process::CommandExt,
+    os::windows::{io::AsRawHandle, process::CommandExt},
     process::{Child, ChildStdin, Command, Stdio},
     time::Duration,
 };
@@ -13,6 +14,7 @@ pub const WM_BRIDGE: u32 = WM_APP + 3;
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
 pub struct Bridge {
+    job: Job,
     child: Child,
     stdin: Option<ChildStdin>,
 }
@@ -23,6 +25,7 @@ impl Bridge {
         if !exe.exists() {
             return None;
         }
+        let job = Job::new().ok()?;
         let mut child = Command::new(exe)
             .arg("serve")
             .stdin(Stdio::piped())
@@ -31,6 +34,10 @@ impl Bridge {
             .creation_flags(CREATE_NO_WINDOW)
             .spawn()
             .ok()?;
+        if job.assign(child.as_raw_handle() as _).is_err() {
+            let _ = child.kill();
+            return None;
+        }
         let out = child.stdout.take()?;
         let stdin = child.stdin.take();
         std::thread::spawn(move || {
@@ -42,7 +49,7 @@ impl Bridge {
                 }
             }
         });
-        Some(Bridge { child, stdin })
+        Some(Bridge { job, child, stdin })
     }
 
     pub fn send(&mut self, v: Value) {
@@ -54,15 +61,15 @@ impl Bridge {
 }
 
 impl Drop for Bridge {
-    /// Cerrar stdin le avisa al puente: sale del canal y termina. Si no, se lo mata.
+    /// EOF permite restaurar volumenes; tras 2 s el Job mata lo que siga vivo.
     fn drop(&mut self) {
-        self.stdin = None;
+        self.stdin.take();
         for _ in 0..20 {
             if let Ok(Some(_)) = self.child.try_wait() {
                 return;
             }
             std::thread::sleep(Duration::from_millis(100));
         }
-        let _ = self.child.kill();
+        self.job.kill();
     }
 }
