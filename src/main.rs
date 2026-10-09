@@ -713,9 +713,11 @@ impl App {
         if let Some(b) = self.br.as_mut() {
             b.send(json!({ "cmd": "token", "token": t }));
         }
-        self.br_has_token = true;
-        self.flash("Token cargado");
-        self.panel_render();
+        self.flash("Guardando token…");
+    }
+
+    fn br_unlink(&mut self) {
+        self.mix_send(json!({ "cmd": "unlink" }));
     }
 
     fn mix_send(&mut self, v: Value) {

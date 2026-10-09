@@ -33,6 +33,7 @@ pub enum PHit {
     Vol(usize),
     ShowBr,
     Invite,
+    Unlink,
     ShowDsc,
     Token,
     Browser(usize),
@@ -183,6 +184,8 @@ impl App {
                         y += 34;
                         if self.br_has_token {
                             row(PHit::Invite, 12, PW - 12, y, y + 30, &mut v);
+                            y += 34;
+                            row(PHit::Unlink, 12, PW - 12, y, y + 30, &mut v);
                             y += 34;
                         }
                     }
@@ -484,7 +487,7 @@ impl App {
                         };
                         if let Some(c) = c { cv.round(l, t, rr, b, self.pf(10.0), c); }
                     }
-                    PHit::Token | PHit::Invite | PHit::Report => cv.round(l, t, rr, b, self.pf(10.0), if hov == hit { th().accent } else { th().tab }),
+                    PHit::Token | PHit::Invite | PHit::Unlink | PHit::Report => cv.round(l, t, rr, b, self.pf(10.0), if hov == hit { th().accent } else { th().tab }),
                     PHit::RText | PHit::RContact => {
                         let f = if hit == PHit::RText { report::Field::Text } else { report::Field::Contact };
                         let focus = self.rep.focus == Some(f);
@@ -579,6 +582,7 @@ impl App {
                         cv.text(self.f.small, t, z, th().ink, DT_CENTER);
                     }
                     PHit::Invite => cv.text(self.f.small, "Invitar el bot a un servidor", z, th().ink, DT_CENTER),
+                    PHit::Unlink => cv.text(self.f.small, "Desvincular bot", z, th().ink, DT_CENTER),
                     PHit::Report => cv.text(self.f.small, "Reportar un problema", z, th().ink, DT_CENTER),
                     PHit::Update => {
                         let v = env!("CARGO_PKG_VERSION");
@@ -711,6 +715,7 @@ impl App {
                 self.mix_send(json!({ "cmd": "invite" }));
                 self.flash("Abriendo la invitación en el navegador");
             }
+            PHit::Unlink => self.br_unlink(),
             PHit::Browser(i) => {
                 let p = self.browsers[i].1.clone();
                 let file = std::env::current_exe().ok().and_then(|e| Some(e.parent()?.join("navegador.txt")));
