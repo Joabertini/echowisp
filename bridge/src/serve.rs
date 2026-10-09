@@ -28,6 +28,18 @@ pub fn emit(v: Value) {
     println!("{v}"); // stdout es LineWriter: cada linea sale entera
 }
 
+/// Keep the original message for bridge.log and old cards; the card renders known codes.
+pub fn mix_error(msg: String, pid: u32) {
+    let code = if msg.ends_with("está silenciada en Windows") { "muted_source" }
+        else if msg.starts_with("la app ") && msg.contains("ya no tiene sesión") { "no_session" }
+        else if msg.starts_with("timeout de activación") { "capture_timeout" }
+        else if msg.starts_with("GetBuffer devolvió datos nulos") { "capture_buffer" }
+        else if msg == "la captura terminó" { "capture_ended" }
+        else { "" };
+    let app = if code == "muted_source" { msg.strip_suffix(" está silenciada en Windows").unwrap_or("") } else { "" };
+    emit(json!({ "ev": "mix_error", "code": code, "app": app, "pid": pid, "msg": msg }));
+}
+
 /// bridge.log (sesion actual; la anterior queda en bridge.prev.log): estados y errores, sin token.
 pub fn log(line: &str) {
     use std::io::Write;
@@ -44,7 +56,21 @@ pub fn log(line: &str) {
 }
 
 fn state(s: &str, msg: &str) {
-    emit(json!({ "ev": "state", "s": s, "msg": msg }));
+    let code = if msg.starts_with("no pude guardar bridge.json") { "config_save" }
+        else if msg == "token con formato inválido" || msg == "token inválido" { "invalid_token" }
+        else if msg.starts_with("no pude cifrar el token") { "encrypt_token" }
+        else if msg.starts_with("no pude entrar") { "join_failed" }
+        else if msg.starts_with("no pude migrar el token") { "token_migrate" }
+        else if msg.starts_with("no pude descifrar el token") { "token_decrypt" }
+        else if msg.starts_with("Discord cerró la conexión") { "discord_disconnected" }
+        else if msg == "desconectado de Discord" { "discord_disconnected" }
+        else if msg.starts_with("el audio no arrancó") { "audio_start_failed" }
+        else if msg == "el mezclador terminó" { "mixer_stopped" }
+        else if msg == "timeout al activar las fuentes" { "sources_timeout" }
+        else if msg.starts_with("la app ") && msg.contains("ya no tiene sesión") { "no_session" }
+        else { "" };
+    let pid = if code == "no_session" { msg.split_whitespace().nth(2).and_then(|v| v.parse::<u32>().ok()).unwrap_or(0) } else { 0 };
+    emit(json!({ "ev": "state", "s": s, "code": code, "pid": pid, "msg": msg }));
 }
 
 /// DPAPI usa la cuenta de Windows actual. La memoria devuelta por Crypt32 pertenece a LocalFree.

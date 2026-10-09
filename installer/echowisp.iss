@@ -1,7 +1,7 @@
 ; Instalador modular de Echowisp. Compilar: ISCC installer\echowisp.iss (despues de cargo build --release
 ; en la raiz y en bridge\). Por usuario, sin admin. Navegador: cualquier Chromium detectado (Brave si esta;
 ; si no, Edge, que viene con Windows). Silencioso: /NAVEGADOR=ruta-al-exe.
-#define AppVer "0.5.1"
+#define AppVer "0.6.0"
 
 [Setup]
 AppId={{6B1F3C2E-9D4A-4E7B-8C51-2F0A9E7D3B14}

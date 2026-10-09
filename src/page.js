@@ -99,7 +99,7 @@
     const v = video(), m = navigator.mediaSession?.metadata, p = player();
     const ad = !!p?.classList?.contains('ad-showing');
     return {
-      title: ad ? 'Anuncio' : (m?.title ?? ''), artist: ad ? '' : (m?.artist ?? ''),
+      title: ad ? '' : (m?.title ?? ''), artist: ad ? '' : (m?.artist ?? ''),
       paused: v?.paused ?? true, pos: v?.currentTime ?? 0, dur: (v?.duration > 0 && isFinite(v.duration)) ? v.duration : 0,
       logged: !!cfg('LOGGED_IN'), ad,
       vol: p?.getVolume?.() ?? Math.round((v?.volume ?? 1) * 100), muted: p?.isMuted?.() ?? v?.muted ?? false,
@@ -299,7 +299,7 @@
   window.__ytm = async (cmd, arg) => {
     try {
       const f = cmds[cmd];
-      if (!f) return { ok: false, error: 'comando desconocido: ' + cmd };
+      if (!f) return { ok: false, error_code: 'unknown_command', command: cmd };
       return { ok: true, data: (await f(arg)) ?? null };
     } catch (e) {
       return { ok: false, error: String(e?.message ?? e) };

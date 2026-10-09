@@ -5,6 +5,7 @@ mod brave;
 mod bridge;
 mod cdp;
 mod engine;
+mod i18n;
 mod panel;
 mod report;
 mod theme;
@@ -28,6 +29,7 @@ use windows_sys::Win32::{
 use brave::wide;
 use panel::{PHit, Panel};
 use theme::th;
+use i18n::t;
 
 // Medidas en px a 96 dpi; se escalan con `px`. El ancho es el de los cinco controles + margen.
 const W: i32 = 240;
@@ -126,6 +128,7 @@ struct Item {
 struct MixApp {
     pid: u64,
     name: String,
+    name_code: String,
     on: bool, // seleccionada para el puente a Discord
     vol: f64, // 0-100
 }
@@ -363,10 +366,12 @@ struct App {
     mix_apps: Vec<MixApp>,
     mix_available: bool,
     mix_err: String,
+    mix_error_event: Option<Value>,
     mix_sel: Option<u64>, // app con la barra de volumen desplegada
     mix_drag: Option<usize>,
     br_state: String,
     br_err: String,
+    br_error_event: Option<Value>,
     br_has_token: bool,
     br_level: f32,
     br_guilds: Vec<BrGuild>,
@@ -445,7 +450,7 @@ impl App {
         if !self.ready {
             (self.status.as_str(), "")
         } else if self.title.is_empty() {
-            ("Nada sonando", if self.logged { "Buscá o abrí tus listas" } else { "Sin sesión · tocá el ícono" })
+            (t("no_music"), if self.logged { t("search_lists") } else { t("no_session") })
         } else {
             (self.title.as_str(), self.artist.as_str())
         }
@@ -616,7 +621,7 @@ impl App {
             Hit::Quick => self.eng.call("home", json!("quick"), tag),
             _ => self.eng.call("playlists", Value::Null, tag),
         }
-        self.flash("Cargando…");
+        self.flash(i18n::t("loading"));
     }
 
     fn set_vol(&mut self, v: f64) {
@@ -658,7 +663,7 @@ impl App {
             .map(|(g, id, n)| it(n, if many { g.name.clone() } else { String::new() }, &format!("{}:{id}", g.id)))
             .collect();
         if items.is_empty() {
-            self.flash(if self.br_guilds.is_empty() { "Bot sin servidor: invitalo desde ⚙" } else { "El servidor no tiene canales de voz" });
+            self.flash(if self.br_guilds.is_empty() { i18n::t("bot_no_server") } else { i18n::t("server_no_voice") });
             return;
         }
         self.clear_search();
@@ -671,7 +676,7 @@ impl App {
             json!({ "cmd": "leave" })
         } else {
             let (Some(g), Some(c)) = (self.br_guild.clone(), self.br_channel.clone()) else {
-                self.flash("Elegí servidor y canal");
+                self.flash(t("choose_channel"));
                 return;
             };
             json!({ "cmd": "join", "guild": g, "channel": c })
@@ -694,7 +699,7 @@ impl App {
             let x = if rc.right + 8 + w <= sw { rc.right + 8 } else { (rc.left - 8 - w).max(0) };
             match brave::launch_discord(&exe, x, rc.top.max(0), w, h) {
                 Ok(p) => self.dsc_win = Some(p),
-                Err(e) => self.flash(&format!("No pude abrir Discord: {e}")),
+                Err(e) => self.flash(&format!("{}{e}", t("discord_open_failed"))),
             }
         }
         self.invalidate();
@@ -707,13 +712,13 @@ impl App {
     fn br_paste_token(&mut self) {
         let t = unsafe { clipboard() }.trim().to_string();
         if t.split('.').count() != 3 {
-            self.flash("Copiá el token del bot y tocá de nuevo");
+            self.flash(i18n::t("paste_token"));
             return;
         }
         if let Some(b) = self.br.as_mut() {
             b.send(json!({ "cmd": "token", "token": t }));
         }
-        self.flash("Guardando token…");
+        self.flash(i18n::t("saving_token"));
     }
 
     fn br_unlink(&mut self) {
@@ -721,7 +726,7 @@ impl App {
     }
 
     fn mix_send(&mut self, v: Value) {
-        if v["cmd"] == "route" { self.mix_err.clear(); }
+        if v["cmd"] == "route" { self.mix_err.clear(); self.mix_error_event = None; }
         if let Some(b) = self.br.as_mut() {
             b.send(v);
         }
@@ -761,9 +766,10 @@ impl App {
                     self.br_has_token = false;
                 }
                 if self.br_state == "error" {
-                    self.br_err = v["msg"].as_str().unwrap_or("error").to_string();
-                    let m = format!("Puente: {}", self.br_err);
-                    engine::log(&m); // la card corta el mensaje; el texto entero queda en engine.log
+                    self.br_error_event = Some(v.clone());
+                    self.br_err = i18n::mix_error(v["code"].as_str().unwrap_or(""), "", v["pid"].as_u64().unwrap_or(0), v["msg"].as_str().unwrap_or("error"));
+                    let m = format!("{}: {}", t("bridge"), self.br_err);
+                    engine::log(&format!("Puente: {}", v["msg"].as_str().unwrap_or("error"))); // el log conserva el mensaje original
                     self.flash(&m);
                 }
                 if self.br_state != "transmitiendo" {
@@ -786,6 +792,7 @@ impl App {
                             .map(|x| MixApp {
                                 pid: x["pid"].as_u64().unwrap_or(0),
                                 name: strs(&x["name"]).unwrap_or_default(),
+                                name_code: strs(&x["name_code"]).unwrap_or_default(),
                                 on: x["on"] == true,
                                 vol: x["vol"].as_f64().unwrap_or(100.0),
                             })
@@ -798,7 +805,9 @@ impl App {
                 self.panel_render();
             }
             Some("mix_error") => {
-                let m = format!("Mezclador: {}", v["msg"].as_str().unwrap_or("error"));
+                self.mix_error_event = Some(v.clone());
+                let message = i18n::mix_error(v["code"].as_str().unwrap_or(""), v["app"].as_str().unwrap_or(""), v["pid"].as_u64().unwrap_or(0), v["msg"].as_str().unwrap_or("error"));
+                let m = format!("{}: {message}", t("mixer"));
                 self.mix_err = m.clone();
                 self.flash(&m);
                 self.panel_render();
@@ -861,7 +870,7 @@ impl App {
             Hit::Play => self.toggle(),
             Hit::Shuffle => {
                 self.cmd("shuffle");
-                self.flash("Cola mezclada");
+                self.flash(t("queue_shuffled"));
             }
             Hit::Repeat => {
                 self.repeat = match self.repeat.as_str() {
@@ -930,7 +939,7 @@ impl App {
             }
             Ev::State(s) => {
                 self.ready = true;
-                self.title = s["title"].as_str().unwrap_or_default().to_string();
+                self.title = if s["ad"] == true { t("ad").into() } else { s["title"].as_str().unwrap_or_default().to_string() };
                 self.artist = s["artist"].as_str().unwrap_or_default().to_string();
                 self.paused = s["paused"].as_bool().unwrap_or(true);
                 self.ad = s["ad"].as_bool().unwrap_or(false);
@@ -955,7 +964,10 @@ impl App {
                         if kind != K_OTHER {
                             self.shown = Hit::None;
                         }
-                        self.flash(r["error"].as_str().unwrap_or("error"));
+                        let error = if r["error_code"] == "unknown_command" {
+                            format!("{}: {}", t("unknown_command"), r["command"].as_str().unwrap_or_default())
+                        } else { r["error"].as_str().unwrap_or("error").to_string() };
+                        self.flash(&error);
                     }
                     return;
                 }
@@ -964,15 +976,15 @@ impl App {
                     self.msg.clear();
                     if items.is_empty() {
                         self.flash(match (kind, self.shown) {
-                            (K_LISTS, Hit::Lists) => "Sin listas (¿sesión iniciada?)",
-                            (K_LISTS, _) => "No encontré esa sección",
-                            _ => "Sin resultados",
+                            (K_LISTS, Hit::Lists) => t("no_playlists"),
+                            (K_LISTS, _) => t("no_section"),
+                            _ => t("no_results"),
                         });
                         self.shown = Hit::None;
                     }
                     self.set_items(items);
                 } else if kind == K_OTHER && r["data"]["spa"] == false {
-                    self.flash("Recargando YouTube Music…");
+                    self.flash(t("reloading"));
                 }
             }
         }
@@ -1255,7 +1267,7 @@ impl App {
         cv.text(self.f.icon, "\u{E721}", self.r(22, Y_SRCH, 40, Y_SRCH + 36), th().dim3, DT_CENTER);
         let field = self.r(44, Y_SRCH, W - 24, Y_SRCH + 36);
         if self.query.is_empty() {
-            cv.text(self.f.text, "Buscar canción…", field, th().dim3, DT_LEFT);
+            cv.text(self.f.text, t("search_song"), field, th().dim3, DT_LEFT);
         } else {
             // Si no entra, se ve el final (donde se escribe).
             let tw = measure(self.f.text, &self.query);
@@ -1280,27 +1292,27 @@ impl App {
             GdiFlush();
             cv.round(x as f32, self.pf((Y_SRCH + 10) as f32), x as f32 + self.pf(1.5).max(1.0), self.pf((Y_SRCH + 26) as f32), 0.5, th().accent);
         }
-        for (t, label) in [(Hit::Lists, "Listas"), (Hit::Again, "Escuchar otra vez"), (Hit::Quick, "Selección rápida")] {
-            let mut z = self.zone(t);
+        for (tab, label) in [(Hit::Lists, t("lists")), (Hit::Again, t("again")), (Hit::Quick, t("quick"))] {
+            let mut z = self.zone(tab);
             z.left += self.px(4);
             z.right -= self.px(4);
-            cv.text_wrap(self.f.small, label, z, if self.shown == t || self.hover == t { th().ink } else { th().dim });
+            cv.text_wrap(self.f.small, label, z, if self.shown == tab || self.hover == tab { th().ink } else { th().dim });
         }
 
         if self.br_shown() {
             let c = self.zone(Hit::BrChannel);
             let chan = self.br_channel_name().map(|c| format!("#{c}"));
             let label = if !self.br_has_token {
-                "Puente · configurar".to_string()
+                t("bridge_setup").to_string()
             } else {
                 match (self.br_state.as_str(), chan) {
-                    ("transmitiendo", Some(c)) => format!("{c} · al aire"),
-                    ("entrando", Some(c)) => format!("Entrando a {c}…"),
-                    ("conectando", _) => "Puente · conectando…".into(),
-                    ("listo", None) if self.br_guilds.is_empty() => "Invitá el bot al servidor".into(),
-                    ("error", _) => format!("Puente · {}", self.br_err),
+                    ("transmitiendo", Some(c)) => format!("{c} · {}", t("live")),
+                    ("entrando", Some(c)) => format!("{} {c}…", t("joining")),
+                    ("conectando", _) => t("bridge_connecting").into(),
+                    ("listo", None) if self.br_guilds.is_empty() => t("invite_bot").into(),
+                    ("error", _) => format!("{} · {}", t("bridge"), self.br_err),
                     (_, Some(c)) => c,
-                    _ => "Puente · elegí canal".into(),
+                    _ => t("bridge_channel").into(),
                 }
             };
             let tz = RECT { left: c.left + self.px(26), right: c.right - self.px(6), bottom: c.bottom - self.px(2), ..c };
@@ -1314,7 +1326,7 @@ impl App {
         if self.dsc_shown() {
             let z = self.zone(Hit::DscRow);
             let open = self.dsc_open();
-            let label = if open { "Discord · abierto (clic cierra)" } else { "Discord · abrir ventana" };
+            let label = if open { t("discord_close") } else { t("discord_open") };
             let tz = RECT { left: z.left + self.px(26), top: z.top, right: z.right - self.px(26), bottom: z.bottom };
             cv.text(self.f.small, label, tz, if open { th().ink } else { th().dim }, DT_LEFT);
             let cz = RECT { left: z.right - self.px(26), ..z };
@@ -1330,7 +1342,7 @@ impl App {
             cv.text(self.f.text, &it.title, self.r(26, y + 4, right, y + 22), th().ink, DT_LEFT);
             cv.text(self.f.small, &it.sub, self.r(26, y + 21, right, y + 37), th().dim, DT_LEFT);
             if it.id.is_some() && hot {
-                cv.text(self.f.small, "Radio", self.radio_rect(vis), th().ink, DT_CENTER);
+                cv.text(self.f.small, t("radio"), self.radio_rect(vis), th().ink, DT_CENTER);
             }
         }
 
@@ -1693,7 +1705,7 @@ fn main() {
         let (w, h) = (px(W), px(H_BASE));
         let (x, y) = initial_pos(w, h);
         let hwnd = CreateWindowExW(
-            WS_EX_LAYERED | WS_EX_TOPMOST | WS_EX_TOOLWINDOW, cls.as_ptr(), wide("YTM").as_ptr(),
+            WS_EX_LAYERED | WS_EX_TOPMOST | WS_EX_TOOLWINDOW, cls.as_ptr(), wide("Echowisp").as_ptr(),
             WS_POPUP, x, y, w, h, null_mut(), null_mut(), hinst, null(),
         );
 
@@ -1706,7 +1718,7 @@ fn main() {
             dirty: false,
             title: String::new(),
             artist: String::new(),
-            status: "Iniciando…".into(),
+            status: t("starting").into(),
             msg: String::new(),
             paused: true,
             ad: false,
@@ -1736,10 +1748,12 @@ fn main() {
             mix_apps: Vec::new(),
             mix_available: false,
             mix_err: String::new(),
+            mix_error_event: None,
             mix_sel: None,
             mix_drag: None,
             br_state: String::new(),
             br_err: String::new(),
+            br_error_event: None,
             br_has_token: false,
             br_level: 0.0,
             br_guilds: Vec::new(),

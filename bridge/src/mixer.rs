@@ -1,6 +1,6 @@
 //! Catálogo de sesiones, selección de procesos y ducking reversible.
 //! El único hilo COM que cambia volumen conserva el estado anterior en ruteo.json.
-use crate::{audio_mix, process_capture, serve::emit};
+use crate::{audio_mix, process_capture, serve::{emit, mix_error}};
 use serde_json::{json, Value};
 use std::{collections::{HashMap, HashSet}, ffi::c_void, path::PathBuf, sync::{mpsc, Arc}, time::{Duration, Instant}};
 use windows::{core::{h, implement, interface, GUID, HRESULT, HSTRING, IUnknown, IUnknown_Vtbl, Interface, PCWSTR, PWSTR}, Win32::{Foundation::*, Media::Audio::*, System::{Com::*, Diagnostics::ToolHelp::*, Threading::*, WinRT::RoGetActivationFactory}}};
@@ -296,7 +296,7 @@ impl Mixer {
             Ok(()) => { self.save_error_visible = false; true }
             Err(e) => {
                 if !self.save_error_visible {
-                    emit(json!({ "ev": "mix_error", "msg": format!("no pude guardar ruteo.json: {e}") }));
+                    emit(json!({ "ev": "mix_error", "code": "route_save", "msg": format!("no pude guardar ruteo.json: {e}") }));
                     self.save_error_visible = true;
                 }
                 false
@@ -340,7 +340,7 @@ impl Mixer {
 
     fn list_from(&mut self, current: &[App], force: bool) {
         let list: Vec<Value> = current.iter().map(|a| json!({
-            "pid": a.pid, "name": a.name, "on": self.selected.contains_key(&a.pid),
+            "pid": a.pid, "name": a.name, "name_code": if a.name == "Música (Echowisp)" { "echowisp_music" } else { "" }, "on": self.selected.contains_key(&a.pid),
             "vol": (self.selected.get(&a.pid).map_or(1.0, |s| s.gain) * 100.0).round(),
         })).collect();
         let ev = json!({ "ev": "apps", "available": true, "mode": "process_loopback", "list": list });
@@ -412,24 +412,24 @@ impl Mixer {
         }
         let current = apps(&self.en);
         let Some(app) = current.iter().find(|a| a.pid == pid) else {
-            emit(json!({ "ev": "mix_error", "msg": "la app no tiene salida de audio compartida activa (quizá usa modo exclusivo)" }));
+            emit(json!({ "ev": "mix_error", "code": "no_shared_output", "msg": "la app no tiene salida de audio compartida activa (quizá usa modo exclusivo)" }));
             self.list(); return;
         };
         if app.exe.to_lowercase().contains("discord") {
-            emit(json!({ "ev": "mix_error", "msg": "Discord no puede ser una fuente del bot" })); self.list(); return;
+            emit(json!({ "ev": "mix_error", "code": "discord_source", "msg": "Discord no puede ser una fuente del bot" })); self.list(); return;
         }
         let parents = parent_map();
         let discord = pid_file("discord.pid");
         let discord_tree = discord != 0 && (descendant(pid, discord, &parents) || descendant(discord, pid, &parents));
         let overlap = self.selected.keys().any(|&other| descendant(pid, other, &parents) || descendant(other, pid, &parents));
         if discord_tree || overlap {
-            emit(json!({ "ev": "mix_error", "msg": "el árbol de procesos se solapa con Discord u otra fuente elegida" })); self.list(); return;
+            emit(json!({ "ev": "mix_error", "code": "overlap", "msg": "el árbol de procesos se solapa con Discord u otra fuente elegida" })); self.list(); return;
         }
         self.selected.entry(pid).or_insert_with(|| Selection { exe: app.exe.clone(), birth: app.birth, gain: 1.0, capture: None, reconnect_deadline: None });
         if self.active {
             if let Err(e) = self.start_one(pid, app) {
                 self.selected.remove(&pid);
-                emit(json!({ "ev": "mix_error", "msg": e }));
+                mix_error(e, pid);
             }
         }
         self.list();
@@ -448,7 +448,7 @@ impl Mixer {
                     if self.selected[&pid].reconnect_deadline.is_none() {
                         self.stop_one(pid);
                         self.selected.get_mut(&pid).unwrap().reconnect_deadline = Some(Instant::now() + Duration::from_secs(10));
-                        emit(json!({ "ev": "mix_error", "msg": format!("la app {pid} no tiene sesión compartida (cerrada o en modo exclusivo); esperando reapertura") }));
+                        emit(json!({ "ev": "mix_error", "code": "waiting_session", "pid": pid, "msg": format!("la app {pid} no tiene sesión compartida (cerrada o en modo exclusivo); esperando reapertura") }));
                     }
                     let old = &self.selected[&pid];
                     let parents = parent_map();
@@ -469,13 +469,13 @@ impl Mixer {
                             if let Some(app) = current.iter().find(|a| a.pid == new_pid) {
                                 if let Err(e) = self.start_one(new_pid, app) {
                                     self.selected.remove(&new_pid);
-                                    emit(json!({ "ev": "mix_error", "msg": e }));
+                                    mix_error(e, new_pid);
                                 }
                             }
                         }
                     } else if self.selected[&pid].reconnect_deadline.is_some_and(|t| Instant::now() >= t) {
                         self.selected.remove(&pid);
-                        emit(json!({ "ev": "mix_error", "msg": format!("la app {pid} no reabrió su salida de audio") }));
+                        emit(json!({ "ev": "mix_error", "code": "output_closed", "pid": pid, "msg": format!("la app {pid} no reabrió su salida de audio") }));
                     }
                     continue;
                 };
@@ -490,14 +490,14 @@ impl Mixer {
                         }
                         self.save_routing();
                         self.stop_one(pid); self.selected.remove(&pid);
-                        emit(json!({ "ev": "mix_error", "msg": format!("{} cambió volumen en Windows; se detuvo el envío", app.name) }));
+                        emit(json!({ "ev": "mix_error", "code": "volume_changed", "app": app.name, "msg": format!("{} cambió volumen en Windows; se detuvo el envío", app.name) }));
                         continue;
                     }
                     for s in &app.sessions {
                         if !self.saved.ducked.contains_key(&s.id) {
                             if let Err(e) = self.subscribe(pid, s).and_then(|_| duck_session(&mut self.saved, app, s)) {
                                 self.stop_one(pid); self.selected.remove(&pid);
-                                emit(json!({ "ev": "mix_error", "msg": e }));
+                                mix_error(e, pid);
                                 break;
                             }
                         }
@@ -520,10 +520,10 @@ impl Mixer {
             for (pid, error) in failed {
                 self.stop_one(pid);
                 self.selected.remove(&pid);
-                emit(json!({ "ev": "mix_error", "msg": error }));
+                mix_error(error, pid);
             }
             if had_source && self.selected.is_empty() {
-                emit(json!({ "ev": "state", "s": "error", "msg": "la última fuente de audio se detuvo" }));
+                emit(json!({ "ev": "state", "s": "error", "code": "last_source_stopped", "msg": "la última fuente de audio se detuvo" }));
             }
         }
     }
@@ -534,11 +534,11 @@ pub fn start(audio: Arc<audio_mix::Shared>) -> (mpsc::Sender<Command>, std::thre
     let (external_tx, external_rx) = mpsc::channel();
     let thread = std::thread::spawn(move || unsafe {
         if let Err(e) = CoInitializeEx(None, COINIT_MULTITHREADED).ok() {
-            emit(json!({ "ev": "mix_error", "msg": format!("COM de audio no inició: {e}") }));
+            emit(json!({ "ev": "mix_error", "code": "com_failed", "msg": format!("COM de audio no inició: {e}") }));
             return;
         }
         let Ok(en) = CoCreateInstance::<_, IMMDeviceEnumerator>(&MMDeviceEnumerator, None, CLSCTX_ALL) else {
-            emit(json!({ "ev": "mix_error", "msg": "no pude abrir el catálogo de sesiones de Windows" }));
+            emit(json!({ "ev": "mix_error", "code": "catalog_failed", "msg": "no pude abrir el catálogo de sesiones de Windows" }));
             CoUninitialize();
             return;
         };
