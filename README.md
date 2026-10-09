@@ -82,6 +82,7 @@ copy target\release\echowisp.exe %LOCALAPPDATA%\Programs\echowisp\
 ```
 
 Cerrar Echowisp antes (el exe en uso no se puede reemplazar).
+Antes de publicar, `scripts/notices.ps1`.
 
 ## Archivos de datos (`%LOCALAPPDATA%\echowisp\`)
 
