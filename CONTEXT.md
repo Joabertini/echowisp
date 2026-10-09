@@ -13,8 +13,11 @@ Funciona con el Brave del usuario cerrado. Prioridad: recursos mínimos y fluide
 - `src/engine.rs` — hilo con la sesión CDP: lanza Brave, inyecta `page.js`, recibe eventos push
   (`Runtime.addBinding("__ytmEvt")`), traduce respuestas a `Ev` vía `PostMessageW`. Reconecta solo.
 - `src/brave.rs` — busca brave.exe (App Paths / Program Files), lanza headless dentro de un Job object
-  con KILL_ON_JOB_CLOSE, ventana de login única (`--app=accounts.google.com…`), mata huérfanos
+  con KILL_ON_JOB_CLOSE; comprueba la configuración, asignación y reanudación y termina el proceso
+  suspendido si no queda confinado. Ventana de login única (`--app=accounts.google.com…`), mata huérfanos
   (solo si `perfil\lockfile` está bloqueado y el pid es brave.exe).
+- `src/bridge.rs` — puente en otro Job con KILL_ON_JOB_CLOSE. Al cerrar la card, cierra stdin para
+  enviar EOF; espera hasta 2 s a que el puente restaure volúmenes y salga, y luego termina el Job.
 - `src/cdp.rs` — WebSocket RFC 6455 mínimo, sin dependencias.
 - `src/page.js` — corre en music.youtube.com: API interna (`/youtubei/v1/search|browse`), play por
   evento `yt-navigate` (sin recargar, ~250 ms; plan B recarga), controles por clic en la barra del
