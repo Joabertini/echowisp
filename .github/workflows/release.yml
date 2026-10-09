@@ -1,0 +1,72 @@
+# Build verificable de la release: card, puente e instalador desde este repo.
+# La firma (SignPath) se agrega cuando el proyecto esté aprobado.
+name: release
+
+on:
+  workflow_dispatch:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Versión coherente
+        shell: pwsh
+        run: |
+          $cargo = (Select-String -Path Cargo.toml -Pattern '^version = "(.+)"').Matches[0].Groups[1].Value
+          $bridge = (Select-String -Path bridge/Cargo.toml -Pattern '^version = "(.+)"').Matches[0].Groups[1].Value
+          $iss = (Select-String -Path installer/echowisp.iss -Pattern '#define AppVer "(.+)"').Matches[0].Groups[1].Value
+          if ($cargo -ne $bridge -or $cargo -ne $iss) { throw "Versiones distintas: card $cargo, puente $bridge, instalador $iss" }
+          if ($env:GITHUB_REF_TYPE -eq 'tag' -and $env:GITHUB_REF_NAME -ne "v$cargo") { throw "El tag $env:GITHUB_REF_NAME no coincide con $cargo" }
+          "VERSION=$cargo" >> $env:GITHUB_ENV
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+            bridge/target
+          key: cargo-${{ hashFiles('Cargo.lock', 'bridge/Cargo.lock') }}
+
+      - name: Card
+        run: cargo build --release --locked
+
+      - name: Puente
+        working-directory: bridge
+        run: cargo build --release --locked
+
+      - name: Tests
+        run: |
+          cargo test --release --locked
+          cd bridge
+          cargo test --release --locked
+
+      - name: Instalador
+        shell: pwsh
+        run: |
+          choco install innosetup -y --no-progress
+          & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" installer\echowisp.iss
+          if ($LASTEXITCODE) { throw "ISCC falló" }
+
+      - name: SHA-256
+        shell: pwsh
+        run: |
+          $files = @("target/release/echowisp.exe", "bridge/target/release/echowisp-bridge.exe", "target/instalador/echowisp-setup-$env:VERSION.exe")
+          Get-FileHash $files -Algorithm SHA256 | ForEach-Object { "$($_.Hash.ToLower())  $(Split-Path $_.Path -Leaf)" } | Tee-Object SHA256SUMS.txt
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: echowisp-${{ env.VERSION }}
+          path: |
+            target/release/echowisp.exe
+            bridge/target/release/echowisp-bridge.exe
+            target/instalador/echowisp-setup-${{ env.VERSION }}.exe
+            SHA256SUMS.txt
+          if-no-files-found: error
