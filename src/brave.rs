@@ -288,10 +288,16 @@ pub fn launch_discord(exe: &Path, x: i32, y: i32, w: i32, h: i32) -> io::Result<
 pub fn http_get(port: u16, path: &str) -> io::Result<String> {
     // El server de DevTools rechaza HTTP/1.0 y no cierra la conexion: se lee por Content-Length.
     let mut s = TcpStream::connect(("127.0.0.1", port))?;
+    s.set_read_timeout(Some(Duration::from_secs(10)))?;
+    s.set_write_timeout(Some(Duration::from_secs(10)))?;
     write!(s, "GET {path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nConnection: close\r\n\r\n")?;
     let mut r = io::BufReader::new(s);
     let mut len = 0usize;
     let mut line = String::new();
+    io::BufRead::read_line(&mut r, &mut line)?;
+    if !line.starts_with("HTTP/1.1 200 ") && !line.starts_with("HTTP/1.0 200 ") {
+        return Err(io::Error::other(format!("DevTools HTTP: {}", line.trim())));
+    }
     loop {
         line.clear();
         if io::BufRead::read_line(&mut r, &mut line)? == 0 || line == "\r\n" {
