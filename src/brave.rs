@@ -97,7 +97,7 @@ pub fn browsers() -> Vec<(String, PathBuf)> {
 }
 
 pub struct Proc {
-    job: HANDLE,
+    job: Job,
     process: HANDLE,
     pub pid: u32,
 }
@@ -109,7 +109,7 @@ impl Proc {
         unsafe { WaitForSingleObject(self.process, ms) == WAIT_OBJECT_0 }
     }
     pub fn kill(&self) {
-        unsafe { TerminateJobObject(self.job, 0) };
+        self.job.kill();
     }
 }
 
@@ -117,8 +117,52 @@ impl Drop for Proc {
     fn drop(&mut self) {
         unsafe {
             CloseHandle(self.process);
-            CloseHandle(self.job); // KILL_ON_JOB_CLOSE: se lleva lo que quede vivo
         }
+    }
+}
+
+pub(crate) struct Job(HANDLE);
+
+impl Job {
+    pub(crate) fn new() -> io::Result<Self> {
+        unsafe {
+            let handle = CreateJobObjectW(null(), null());
+            if handle.is_null() {
+                return Err(io::Error::last_os_error());
+            }
+            let job = Self(handle);
+            let mut info: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = zeroed();
+            info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+            check_win32(SetInformationJobObject(
+                job.0,
+                JobObjectExtendedLimitInformation,
+                (&info as *const JOBOBJECT_EXTENDED_LIMIT_INFORMATION).cast(),
+                size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
+            ))?;
+            Ok(job)
+        }
+    }
+
+    pub(crate) fn assign(&self, process: HANDLE) -> io::Result<()> {
+        check_win32(unsafe { AssignProcessToJobObject(self.0, process) })
+    }
+
+    pub(crate) fn kill(&self) {
+        unsafe { TerminateJobObject(self.0, 0) };
+    }
+}
+
+impl Drop for Job {
+    fn drop(&mut self) {
+        unsafe { CloseHandle(self.0) }; // KILL_ON_JOB_CLOSE: se lleva lo que quede vivo
+    }
+}
+
+fn check_win32(ok: i32) -> io::Result<()> {
+    if ok == 0 {
+        Err(io::Error::last_os_error())
+    } else {
+        Ok(())
     }
 }
 
@@ -136,34 +180,45 @@ fn spawn(exe: &Path, args: &[String]) -> io::Result<Proc> {
     }
     let mut cmdw = wide(&cmd);
     unsafe {
-        let job = CreateJobObjectW(null(), null());
-        if job.is_null() {
-            return Err(io::Error::last_os_error());
-        }
-        let mut info: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = zeroed();
-        info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
-        SetInformationJobObject(
-            job,
-            JobObjectExtendedLimitInformation,
-            (&info as *const JOBOBJECT_EXTENDED_LIMIT_INFORMATION).cast(),
-            size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
-        );
+        let job = Job::new()?;
         let mut si: STARTUPINFOW = zeroed();
         si.cb = size_of::<STARTUPINFOW>() as u32;
         let mut pi: PROCESS_INFORMATION = zeroed();
         let ok = CreateProcessW(
-            null(), cmdw.as_mut_ptr(), null(), null(), 0, CREATE_SUSPENDED,
-            null(), null(), &si, &mut pi,
+            null(),
+            cmdw.as_mut_ptr(),
+            null(),
+            null(),
+            0,
+            CREATE_SUSPENDED,
+            null(),
+            null(),
+            &si,
+            &mut pi,
         );
         if ok == 0 {
             let e = io::Error::last_os_error();
-            CloseHandle(job);
             return Err(e);
         }
-        AssignProcessToJobObject(job, pi.hProcess);
-        ResumeThread(pi.hThread);
+        let result = job.assign(pi.hProcess).and_then(|()| {
+            if ResumeThread(pi.hThread) == u32::MAX {
+                Err(io::Error::last_os_error())
+            } else {
+                Ok(())
+            }
+        });
+        if let Err(e) = result {
+            TerminateProcess(pi.hProcess, 1);
+            CloseHandle(pi.hThread);
+            CloseHandle(pi.hProcess);
+            return Err(e);
+        }
         CloseHandle(pi.hThread);
-        Ok(Proc { job, process: pi.hProcess, pid: pi.dwProcessId })
+        Ok(Proc {
+            job,
+            process: pi.hProcess,
+            pid: pi.dwProcessId,
+        })
     }
 }
 
@@ -208,19 +263,17 @@ pub fn launch_headless(exe: &Path) -> io::Result<(Proc, u16)> {
         "--remote-debugging-port=0",
         "--no-first-run",
         "--no-default-browser-check",
-        // Todo en un proceso: ahorra ~70 MB frente al modelo multiproceso.
-        "--single-process",
+        // Modelo de procesos normal (sandbox + aislamiento por sitio). --single-process ahorraba
+        // ~59 MB privados reproduciendo (243 vs 302, medido 09-10) a costa de correr la página sin sandbox.
         "--disable-gpu",
-        "--in-process-gpu",
         "--js-flags=--lite-mode",
         "--disable-extensions",
         // Sin --disable-component-update ni --disable-background-networking: Brave Shields
         // necesita bajar y actualizar sus listas de filtros (con esos flags no bloqueaba nada).
         "--disable-sync",
         "--disable-default-apps",
-        "--disable-features=IsolateOrigins,site-per-process,Translate,MediaRouter,OptimizationHints,\
-BackForwardCache,SpareRendererForSitePerProcess,AudioServiceOutOfProcess,PaintHolding",
-        "--enable-features=NetworkServiceInProcess2",
+        "--disable-features=Translate,MediaRouter,OptimizationHints,BackForwardCache,\
+SpareRendererForSitePerProcess,PaintHolding",
         "--blink-settings=imagesEnabled=false",
         "--autoplay-policy=no-user-gesture-required",
         "about:blank",
@@ -274,6 +327,8 @@ pub fn launch_discord(exe: &Path, x: i32, y: i32, w: i32, h: i32) -> io::Result<
         // WebAssembly, y Discord cifra la voz de punta a punta con WebAssembly (la voz quedaba en
         // bucle autenticando/desconectado).
         "--disable-gpu".into(),
+        // Medido en reposo: 749 → 696 MB, sin tocar el aislamiento ni la voz.
+        "--enable-low-end-device-mode".into(),
         "--disable-features=Translate,MediaRouter,OptimizationHints,BackForwardCache,SpareRendererForSitePerProcess,PaintHolding".into(),
         format!("--window-position={x},{y}"),
         format!("--window-size={w},{h}"),
@@ -288,10 +343,16 @@ pub fn launch_discord(exe: &Path, x: i32, y: i32, w: i32, h: i32) -> io::Result<
 pub fn http_get(port: u16, path: &str) -> io::Result<String> {
     // El server de DevTools rechaza HTTP/1.0 y no cierra la conexion: se lee por Content-Length.
     let mut s = TcpStream::connect(("127.0.0.1", port))?;
+    s.set_read_timeout(Some(Duration::from_secs(10)))?;
+    s.set_write_timeout(Some(Duration::from_secs(10)))?;
     write!(s, "GET {path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nConnection: close\r\n\r\n")?;
     let mut r = io::BufReader::new(s);
     let mut len = 0usize;
     let mut line = String::new();
+    io::BufRead::read_line(&mut r, &mut line)?;
+    if !line.starts_with("HTTP/1.1 200 ") && !line.starts_with("HTTP/1.0 200 ") {
+        return Err(io::Error::other(format!("DevTools HTTP: {}", line.trim())));
+    }
     loop {
         line.clear();
         if io::BufRead::read_line(&mut r, &mut line)? == 0 || line == "\r\n" {

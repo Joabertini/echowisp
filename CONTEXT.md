@@ -13,8 +13,11 @@ Funciona con el Brave del usuario cerrado. Prioridad: recursos mínimos y fluide
 - `src/engine.rs` — hilo con la sesión CDP: lanza Brave, inyecta `page.js`, recibe eventos push
   (`Runtime.addBinding("__ytmEvt")`), traduce respuestas a `Ev` vía `PostMessageW`. Reconecta solo.
 - `src/brave.rs` — busca brave.exe (App Paths / Program Files), lanza headless dentro de un Job object
-  con KILL_ON_JOB_CLOSE, ventana de login única (`--app=accounts.google.com…`), mata huérfanos
+  con KILL_ON_JOB_CLOSE; comprueba la configuración, asignación y reanudación y termina el proceso
+  suspendido si no queda confinado. Ventana de login única (`--app=accounts.google.com…`), mata huérfanos
   (solo si `perfil\lockfile` está bloqueado y el pid es brave.exe).
+- `src/bridge.rs` — puente en otro Job con KILL_ON_JOB_CLOSE. Al cerrar la card, cierra stdin para
+  enviar EOF; espera hasta 2 s a que el puente restaure volúmenes y salga, y luego termina el Job.
 - `src/cdp.rs` — WebSocket RFC 6455 mínimo, sin dependencias.
 - `src/page.js` — corre en music.youtube.com: API interna (`/youtubei/v1/search|browse`), play por
   evento `yt-navigate` (sin recargar, ~250 ms; plan B recarga), controles por clic en la barra del
@@ -28,13 +31,15 @@ Funciona con el Brave del usuario cerrado. Prioridad: recursos mínimos y fluide
 - **Reproducción solo con el reproductor oficial** (opción C): el audio lo reproduce la página de
   YouTube Music en un navegador real. No se descarga ni se decodifica el audio por fuera del sitio.
 - **Sin extensión**: Brave no permite instalar extensiones fuera de la tienda en silencio; CDP alcanza.
-- **Flags de Brave**: `--headless=new --single-process --disable-gpu --in-process-gpu
-  --js-flags=--lite-mode --blink-settings=imagesEnabled=false --autoplay-policy=no-user-gesture-required`.
-  NO usar `--disable-component-update` ni `--disable-background-networking`: dejan a Shields sin
+- **Flags de Brave**: `--headless=new --disable-gpu --js-flags=--lite-mode
+  --blink-settings=imagesEnabled=false --autoplay-policy=no-user-gesture-required`, con el modelo de
+  procesos normal (sandbox + aislamiento por sitio). Desde 0.5.1 sin `--single-process` ni aislamiento
+  apagado: costaba la sandbox de la página por ~59 MB privados (243 vs 302 reproduciendo, 09-10;
+  sandbox sin aislamiento por sitio: 292). Discord: `--enable-low-end-device-mode` (749 → 696 MB). NO usar `--disable-component-update` ni `--disable-background-networking`: dejan a Shields sin
   listas (medido: 0 vs 4 bloqueos en 20 s, misma RAM). NO limitar heap (`--max-old-space-size=96`
   crasheó la pestaña).
 - User agent: headless dice "HeadlessChrome" y YTM lo rechaza → `Network.setUserAgentOverride`.
-- `--single-process`: `addScriptToEvaluateOnNewDocument` no siempre corre y una 2ª conexión CDP no ve
+- Inyección (de cuando se usaba `--single-process`; se mantiene): `addScriptToEvaluateOnNewDocument` no siempre corría y una 2ª conexión CDP no ve
   contextos → se inyecta `page.js` en cada `executionContextCreated` del frame principal y se usa una
   sola conexión. Filtrar por `frameId == target id` (los iframes de anuncios también son isDefault).
 - **Anuncios propios** (`page.js`): se borran `adPlacements`/`playerAds`/`adSlots` de cada respuesta del
@@ -105,7 +110,7 @@ Funciona con el Brave del usuario cerrado. Prioridad: recursos mínimos y fluide
   `target/release/build/` + `LIBOPUS_STATIC=1`.
 - `echowisp-bridge audio-probe`: diagnóstico sin Discord. `IAudioClient2` no existe en process
   loopback (no pedir `POST_VOLUME_LOOPBACK`).
-- Exe: ~270 KB; ~2 MB privados. Brave: 2 procesos, ~180–245 MB reproduciendo; CPU ~0,2 %.
+- Exe: ~270 KB; ~2 MB privados. Brave (0.5.1, modelo normal): 8–9 procesos, ~300 MB privados reproduciendo.
 
 ## Pendiente / ideas
 - Probar teclas multimedia (pueden estar tomadas por otra app).
