@@ -25,22 +25,51 @@ SolidCompression=yes
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 WizardStyle=modern
+; Idioma segun Windows, sin preguntar.
+ShowLanguageDialog=no
 
 [Languages]
+Name: "en"; MessagesFile: "compiler:Default.isl"
 Name: "es"; MessagesFile: "compiler:Languages\Spanish.isl"
 
+[CustomMessages]
+en.TipoTodo=Everything
+es.TipoTodo=Todo
+en.TipoMusica=Music only
+es.TipoMusica=Solo música
+en.TipoElegir=Custom
+es.TipoElegir=Elegir
+en.CompMusica=YouTube Music card
+es.CompMusica=Card de YouTube Music
+en.CompDiscord=Discord in a window next to the card (Discord's own, unmodified)
+es.CompDiscord=Discord en una ventana al costado de la card (la de Discord, sin modificar)
+en.CompPuente=Discord bridge (app audio → bot, no virtual cable)
+es.CompPuente=Puente a Discord (audio de apps → bot, sin cable virtual)
+en.TareaInicio=Start with Windows
+es.TareaInicio=Abrir con Windows
+en.Abrir=Open Echowisp
+es.Abrir=Abrir Echowisp
+en.NavTitulo=Browser
+es.NavTitulo=Navegador
+en.NavPregunta=Echowisp plays through a browser with no window. Which one should it use?
+es.NavPregunta=Echowisp reproduce con un navegador sin ventana. ¿Cuál uso?
+en.NavNota=Echowisp removes ads on its own: it works the same with any of them. If you have no preference, keep the selected one.
+es.NavNota=Echowisp saca los anuncios por su cuenta: anda igual con cualquiera. Si no tenés preferencia, dejá el marcado.
+en.SinNavegador=No compatible browser found (Brave, Edge, Chrome, Vivaldi or Chromium). Install one and run the installer again.
+es.SinNavegador=No encontré ningún navegador compatible (Brave, Edge, Chrome, Vivaldi o Chromium). Instalá uno y volvé a correr el instalador.
+
 [Types]
-Name: "full"; Description: "Todo"
-Name: "musica"; Description: "Solo música"
-Name: "custom"; Description: "Elegir"; Flags: iscustom
+Name: "full"; Description: "{cm:TipoTodo}"
+Name: "musica"; Description: "{cm:TipoMusica}"
+Name: "custom"; Description: "{cm:TipoElegir}"; Flags: iscustom
 
 [Components]
-Name: "musica"; Description: "Card de YouTube Music"; Types: full musica custom; Flags: fixed
-Name: "discord"; Description: "Discord en una ventana al costado de la card (la de Discord, sin modificar)"; Types: full
-Name: "puente"; Description: "Puente a Discord (audio de apps → bot, sin cable virtual)"; Types: full
+Name: "musica"; Description: "{cm:CompMusica}"; Types: full musica custom; Flags: fixed
+Name: "discord"; Description: "{cm:CompDiscord}"; Types: full
+Name: "puente"; Description: "{cm:CompPuente}"; Types: full
 
 [Tasks]
-Name: "inicio"; Description: "Abrir con Windows"; Flags: unchecked
+Name: "inicio"; Description: "{cm:TareaInicio}"; Flags: unchecked
 
 [Files]
 Source: "..\target\release\echowisp.exe"; DestDir: "{app}"; Flags: ignoreversion; Components: musica
@@ -72,7 +101,7 @@ Name: "{userstartup}\Echowisp"; Filename: "{app}\echowisp.exe"; Tasks: inicio
 Name: "{userdesktop}\Echowisp"; Filename: "{app}\echowisp.exe"; Check: HabiaEscritorio
 
 [Run]
-Filename: "{app}\echowisp.exe"; Description: "Abrir Echowisp"; Flags: postinstall nowait skipifsilent
+Filename: "{app}\echowisp.exe"; Description: "{cm:Abrir}"; Flags: postinstall nowait skipifsilent
 ; Actualizacion desde la card (/RELANZAR=1, silenciosa): se vuelve a abrir sola.
 Filename: "{app}\echowisp.exe"; Flags: nowait; Check: Relanzar
 
@@ -127,10 +156,8 @@ var
 begin
   Escritorio := FileExists(ExpandConstant('{userdesktop}\YTM Float.lnk'));
   Rutas := TStringList.Create;
-  Pagina := CreateInputOptionPage(wpSelectComponents, 'Navegador',
-    'Echowisp reproduce con un navegador sin ventana. ¿Cuál uso?',
-    'Echowisp saca los anuncios por su cuenta: anda igual con cualquiera. Si no tenés preferencia, dejá el marcado.',
-    True, False);
+  Pagina := CreateInputOptionPage(wpSelectComponents, CustomMessage('NavTitulo'),
+    CustomMessage('NavPregunta'), CustomMessage('NavNota'), True, False);
   { Orden de preferencia: Brave si esta; si no, Edge (viene con Windows). }
   Agregar('Brave', Buscar('brave.exe', 'BraveSoftware\Brave-Browser\Application\brave.exe'));
   Agregar('Microsoft Edge', Buscar('msedge.exe', 'Microsoft\Edge\Application\msedge.exe'));
@@ -159,7 +186,7 @@ function PrepareToInstall(var NeedsRestart: Boolean): String;
 begin
   Result := '';
   if Rutas.Count = 0 then
-    Result := 'No encontré ningún navegador compatible (Brave, Edge, Chrome, Vivaldi o Chromium). Instalá uno y volvé a correr el instalador.';
+    Result := CustomMessage('SinNavegador');
 end;
 
 procedure CurStepChanged(CurStep: TSetupStep);
