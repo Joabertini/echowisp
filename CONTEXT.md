@@ -1,129 +1,126 @@
-# CONTEXT — Echowisp, antes YTM Float (al 08-10-2026)
+# CONTEXT — Echowisp, formerly YTM Float (as of 08-10-2026)
 
-## Objetivo
-Reproductor flotante hiperliviano de YouTube Music (cuenta gratuita, sin Premium), estética oscura
-de tarjetas con acento índigo.
-Funciona con el Brave del usuario cerrado. Prioridad: recursos mínimos y fluidez.
+## Goal
+Ultra-lightweight floating YouTube Music player (free account, no Premium), with a dark card aesthetic
+and indigo accent.
+It runs with the user's Brave closed. Priorities: minimal resource use and responsiveness.
 
-## Arquitectura
-- `src/main.rs` — UI: ventana en capas (`WS_EX_LAYERED`, `UpdateLayeredWindow`), formas antialias
-  hechas a mano sobre un DIB de 32 bits, texto GDI, campo de búsqueda propio (los controles hijos no se
-  ven en ventanas en capas). Instancia única (mutex), `RegisterHotKey`, `WM_MOUSEACTIVATE` → no activa
-  salvo en el buscador.
-- `src/engine.rs` — hilo con la sesión CDP: lanza Brave, inyecta `page.js`, recibe eventos push
-  (`Runtime.addBinding("__ytmEvt")`), traduce respuestas a `Ev` vía `PostMessageW`. Reconecta solo.
-- `src/brave.rs` — busca brave.exe (App Paths / Program Files), lanza headless dentro de un Job object
-  con KILL_ON_JOB_CLOSE; comprueba la configuración, asignación y reanudación y termina el proceso
-  suspendido si no queda confinado. Ventana de login única (`--app=accounts.google.com…`), mata huérfanos
-  (solo si `perfil\lockfile` está bloqueado y el pid es brave.exe).
-- `src/bridge.rs` — puente en otro Job con KILL_ON_JOB_CLOSE. Al cerrar la card, cierra stdin para
-  enviar EOF; espera hasta 2 s a que el puente restaure volúmenes y salga, y luego termina el Job.
-- `src/cdp.rs` — WebSocket RFC 6455 mínimo, sin dependencias.
-- `src/page.js` — corre en music.youtube.com: API interna (`/youtubei/v1/search|browse`), play por
-  evento `yt-navigate` (sin recargar, ~250 ms; plan B recarga), controles por clic en la barra del
-  reproductor, estado por `navigator.mediaSession` + `repeat-mode` del `ytmusic-player-bar`.
-- `src/report.rs` — "Reportar un problema" (al pie de Configuración): texto + mail opcional + datos
-  técnicos opcionales (Windows y final de `engine.log` sin la carpeta del usuario; si la sesión es corta,
-  completa con `engine.prev.log`). `engine.log` es por sesión: al arrancar pasa a `engine.prev.log`. POST por WinHTTP a
-  `reportes.bertinilabs.xyz/v1/reporte` en un hilo; vuelve como `WM_REPORT`. El servidor guarda y reenvía.
+## Architecture
+- `src/main.rs` — UI: layered window (`WS_EX_LAYERED`, `UpdateLayeredWindow`), hand-drawn antialiased
+  shapes on a 32-bit DIB, GDI text, custom search field (child controls do not show in layered windows).
+  Single instance (mutex), `RegisterHotKey`, `WM_MOUSEACTIVATE` → does not activate except in the search field.
+- `src/engine.rs` — CDP session thread: launches Brave, injects `page.js`, receives push events
+  (`Runtime.addBinding("__ytmEvt")`), translates responses into `Ev` via `PostMessageW`. Reconnects on its own.
+- `src/brave.rs` — finds brave.exe (App Paths / Program Files), launches headless inside a Job object
+  with KILL_ON_JOB_CLOSE; checks configuration, assignment, and resumption, and terminates the suspended
+  process if it is not confined. Single login window (`--app=accounts.google.com…`), kills orphans
+  (only if `perfil\lockfile` is locked and the pid is brave.exe).
+- `src/bridge.rs` — bridge in another Job with KILL_ON_JOB_CLOSE. When the card closes, closes stdin to
+  send EOF; waits up to 2 s for the bridge to restore volumes and exit, then terminates the Job.
+- `src/cdp.rs` — minimal RFC 6455 WebSocket, no dependencies.
+- `src/page.js` — runs on music.youtube.com: internal API (`/youtubei/v1/search|browse`), plays via
+  `yt-navigate` event (without reloading, ~250 ms; fallback reload), controls by clicking the player bar,
+  state through `navigator.mediaSession` + `repeat-mode` from `ytmusic-player-bar`.
+- `src/report.rs` — “Report a problem” (at the bottom of Settings): text + optional email + optional
+  technical data (Windows and the end of `engine.log` without the user folder; if the session is short,
+  completes it with `engine.prev.log`). `engine.log` is per session: on startup it moves to `engine.prev.log`.
+  POST via WinHTTP to `reportes.bertinilabs.xyz/v1/reporte` in a thread; returns as `WM_REPORT`. The server stores and forwards it.
 
-## Decisiones (con motivo)
-- **Reproducción solo con el reproductor oficial** (opción C): el audio lo reproduce la página de
-  YouTube Music en un navegador real. No se descarga ni se decodifica el audio por fuera del sitio.
-- **Sin extensión**: Brave no permite instalar extensiones fuera de la tienda en silencio; CDP alcanza.
-- **Flags de Brave**: `--headless=new --disable-gpu --js-flags=--lite-mode
-  --blink-settings=imagesEnabled=false --autoplay-policy=no-user-gesture-required`, con el modelo de
-  procesos normal (sandbox + aislamiento por sitio). Desde 0.5.1 sin `--single-process` ni aislamiento
-  apagado: costaba la sandbox de la página por ~59 MB privados (243 vs 302 reproduciendo, 09-10;
-  sandbox sin aislamiento por sitio: 292). Discord: `--enable-low-end-device-mode` (749 → 696 MB). NO usar `--disable-component-update` ni `--disable-background-networking`: dejan a Shields sin
-  listas (medido: 0 vs 4 bloqueos en 20 s, misma RAM). NO limitar heap (`--max-old-space-size=96`
-  crasheó la pestaña).
-- User agent: headless dice "HeadlessChrome" y YTM lo rechaza → `Network.setUserAgentOverride`.
-- Inyección (de cuando se usaba `--single-process`; se mantiene): `addScriptToEvaluateOnNewDocument` no siempre corría y una 2ª conexión CDP no ve
-  contextos → se inyecta `page.js` en cada `executionContextCreated` del frame principal y se usa una
-  sola conexión. Filtrar por `frameId == target id` (los iframes de anuncios también son isDefault).
-- **Anuncios propios** (`page.js`): se borran `adPlacements`/`playerAds`/`adSlots` de cada respuesta del
-  reproductor (`JSON.parse`, `Response.json`, `ytInitialPlayerResponse`) y, si igual aparece `.ad-showing`, se
-  silencia, se salta al final y se toca "Omitir". No depende de Shields: con perfil nuevo las listas tardan.
-- **Radio: actual + 5 próximas** (`trimQueue`, por `queue.removeItem(String(watchEndpoint.index))`). Solo
-  hacia adelante: quitar lo ya sonado corre índices y "siguiente" salta mal. `automixItems` (autoplay de
-  canción suelta) no se toca: recortado no se vuelve a llenar. La radio sí pide más al llegar al final.
-- **Reciclado horario** (`page.js` → `engine.rs`): YTM retiene nodos desprendidos (47k vs 7k vivos) y Brave
-  no devuelve la RAM al recargar; solo reiniciarlo la baja (480 → 180 MB medido). Tras 1 h, en pausa (≥ 1 min)
-  o justo antes de terminar una canción, page.js manda `{recycle: {url, t, paused, vol, muted}}`; el exe cierra
-  el navegador, reabre en esa URL y deja `__ytmRestore` antes de page.js (posición, pausa, volumen y mute; el
-  mute de YTM no sobrevive al reinicio). La card no muestra "Iniciando" (`quiet`). Pruebas:
-  `window.__ytmRecycleMs = 0` por CDP.
-- Arranque del navegador: espera hasta 40 s el `DevToolsActivePort` (tras actualizarse tarda más de 15).
-- **Actualizar desde la card** (`update.rs`): al arrancar lee `www.bertinilabs.xyz/echowisp/version.json`
-  (`{version, url, sha256}`). Configuración siempre muestra la fila de versión: "buscando novedades", "al día",
-  "sin conexión (reintentar)" o el botón "Actualizar a X". Baja el instalador
-  por WinHTTP (sin la marca de internet: SmartScreen no lo frena), verifica SHA-256 (BCrypt), lo corre con
-  `/VERYSILENT /RELANZAR=1 /NAVEGADOR=<actual>` tras ~2 s (cmd + ping: la card tiene que cerrarse antes por el
-  AppMutex) y el instalador reabre la card. **Al publicar una versión: subir el exe y actualizar version.json.**
-- Brave Origin descartado: en Windows es pago (ventana de compra). Respaldo: Edge.
-- DevTools HTTP rechaza HTTP/1.0 y no cierra la conexión → HTTP/1.1 + Content-Length.
-- `DrawTextW` con string vacío revienta (puntero de Vec vacío) → se saltea.
-- Estantes de portada (`browse FEmusic_home`): se buscan por título es/en ("Vuelve a escucharlo",
-  "Selecciones rápidas") siguiendo `nextContinuationData`; los rápidos vienen en la 2ª página (medido 05-10).
-- Ctrl+Alt+M lo tiene registrado otra app del usuario (medido 05-10 con la card cerrada) → ocultar
-  pasó a Ctrl+Alt+H y colapsar a Ctrl+Alt+N. Atajos que no se registran quedan en `engine.log`.
-- Nombre en el Administrador de tareas: recurso de versión (`echowisp.rc`, `FileDescription`) compilado
-  por `build.rs` con `embed-resource` (solo build-dep; usa rc.exe del Windows SDK). Brave headless es hijo
-  directo, así que se agrupa debajo.
-- Volumen por `movie_player.setVolume/mute` (sincroniza con la UI de YTM), no `video.volume`.
-- Ancho 240 = cinco controles + margen. Colapsada (doble clic, `WM_NCLBUTTONDBLCLK`) mide lo que el texto;
-  al cambiar de ancho se conserva el centro y `pos.txt` guarda la posición de la tarjeta expandida.
+## Decisions (with rationale)
+- **Playback only through the official player** (option C): audio is played by the YouTube Music page in
+  a real browser. Audio is not downloaded or decoded outside the site.
+- **No extension**: Brave does not allow extensions to be silently installed outside the store; CDP is sufficient.
+- **Brave flags**: `--headless=new --disable-gpu --js-flags=--lite-mode
+  --blink-settings=imagesEnabled=false --autoplay-policy=no-user-gesture-required`, with the normal process
+  model (sandbox + site isolation). Since 0.5.1, no `--single-process` or disabled isolation: it cost the
+  page sandbox ~59 MB private (243 vs 302 playing, 09-10; sandbox without site isolation: 292). Discord:
+  `--enable-low-end-device-mode` (749 → 696 MB). DO NOT use `--disable-component-update` or
+  `--disable-background-networking`: they leave Shields without lists (measured: 0 vs 4 blocks in 20 s,
+  same RAM). DO NOT limit the heap (`--max-old-space-size=96` crashed the tab).
+- User agent: headless reports “HeadlessChrome” and YTM rejects it → `Network.setUserAgentOverride`.
+- Injection (from when `--single-process` was used; retained): `addScriptToEvaluateOnNewDocument` did not
+  always run and a 2nd CDP connection cannot see contexts → inject `page.js` into every main-frame
+  `executionContextCreated` and use a single connection. Filter by `frameId == target id` (ad iframes are also isDefault).
+- **In-app ad blocking** (`page.js`): removes `adPlacements`/`playerAds`/`adSlots` from each player response
+  (`JSON.parse`, `Response.json`, `ytInitialPlayerResponse`) and, if `.ad-showing` still appears, mutes,
+  skips to the end, and clicks “Skip”. It does not depend on Shields: lists take time with a new profile.
+- **Radio: current + next 5** (`trimQueue`, via `queue.removeItem(String(watchEndpoint.index))`). Only
+  forward: removing already played tracks shifts indexes and “next” skips incorrectly. `automixItems`
+  (single-song autoplay) is untouched: a trimmed queue is not refilled. Radio does request more on reaching the end.
+- **Hourly recycling** (`page.js` → `engine.rs`): YTM retains detached nodes (47k vs 7k alive) and Brave
+  does not return RAM on reload; only restarting lowers it (480 → 180 MB measured). After 1 h, while paused
+  (≥ 1 min) or right before a song ends, page.js sends `{recycle: {url, t, paused, vol, muted}}`; the exe
+  closes the browser, reopens at that URL, and leaves `__ytmRestore` before page.js (position, pause, volume,
+  and mute; YTM mute does not survive a restart). The card does not display “Starting” (`quiet`). Tests:
+  `window.__ytmRecycleMs = 0` via CDP.
+- Browser startup: waits up to 40 s for `DevToolsActivePort` (after updating it can take more than 15).
+- **Update from the card** (`update.rs`): on startup reads `www.bertinilabs.xyz/echowisp/version.json`
+  (`{version, url, sha256}`). Settings always shows the version row: “checking for updates”, “up to date”,
+  “offline (retry)”, or the “Update to X” button. Downloads the installer through WinHTTP (without the
+  internet mark: SmartScreen does not block it), verifies SHA-256 (BCrypt), runs it with
+  `/VERYSILENT /RELANZAR=1 /NAVEGADOR=<actual>` after ~2 s (cmd + ping: the card must close first because
+  of AppMutex), and the installer reopens the card. **When publishing a version: upload the exe and update version.json.**
+- Brave Origin discarded: on Windows it is paid (purchase window). Fallback: Edge.
+- DevTools HTTP rejects HTTP/1.0 and does not close the connection → HTTP/1.1 + Content-Length.
+- `DrawTextW` with an empty string crashes (empty Vec pointer) → skip it.
+- Home shelves (`browse FEmusic_home`): find them by es/en title (“Listen again”, “Quick picks”),
+  following `nextContinuationData`; quick picks are on page 2 (measured 05-10).
+- Ctrl+Alt+M is registered by another user app (measured 05-10 with the card closed) → hide moved to
+  Ctrl+Alt+H and collapse to Ctrl+Alt+N. Hotkeys that cannot be registered remain in `engine.log`.
+- Task Manager name: version resource (`echowisp.rc`, `FileDescription`) compiled by `build.rs` with
+  `embed-resource` (build-dependency only; uses rc.exe from the Windows SDK). Headless Brave is a direct child,
+  so it groups underneath.
+- Volume through `movie_player.setVolume/mute` (synchronizes with YTM UI), not `video.volume`.
+- Width 240 = five controls + margin. Collapsed (double-click, `WM_NCLBUTTONDBLCLK`) measures the text;
+  when width changes it retains the center and `pos.txt` saves the expanded card position.
 
-## Medidas
-- Puente a Discord (`bridge/`), sin VB-Cable: WASAPI process loopback por PID/árbol, f32 estéreo
-  48 kHz. Camino del audio (sin hilo ni reloj propio):
-  - `process_capture.rs`: un hilo por app, despierta con el evento de WASAPI y escribe directo en
-    la mezcla (sin copia intermedia).
-  - `audio_mix.rs`: cola por app en orden de llegada; songbird tira un bloque de 20 ms (`Live`)
-    desde su hilo de mezcla. Sin apps sonando → silencio al instante; con apps → espera el bloque
-    completo de todas hasta la próxima marca de 20 ms. Cola > 60 ms → recorta 2 frames por bloque
-    (deriva de relojes); tope 100 ms.
-  - **No alinear por QPC**: el cursor por hora descartaba todo como viejo si songbird se atrasaba
-    (silencio total, medido). Los paquetes llegan contiguos (desvío medido 0).
-  - `serve.rs` abre y cierra la salida (`Shared::open/close`) en su hilo, en orden: un cierre
-    asíncrono del mezclador cortaba la salida nueva al reconectar.
-- Ducking (`mixer.rs`): al enviar una app, volumen de sesión a `1e-4` con contexto propio y
-  ganancia `1e4` en la captura (es post volumen; mute la silencia). Volumen original por sesión en
-  `ruteo.json` v2; se restaura al deseleccionar, leave, fallo, EOF y al reabrir tras cierre forzado.
-  Cambio de volumen desde Windows → se detiene esa fuente y no se pisa (probado, es lo esperado).
-  Revisión de apps cada 1 s; la lista se emite a la card solo si cambió.
-- **Probar el audio antes de pedir prueba en vivo**: `echowisp-bridge simular --pid N [--secs S]
-  [--espera S] [--out f.raw]` lee por el mismo camino que songbird (RawAdapter → decodificador, un
-  paquete cada 20 ms) y cuenta saltos/silencio en un tono. `--espera` reproduce el bot conectado
-  antes de elegir la app. Tono de prueba y scripts fuera del repo (`notas/tono/`).
-- `bridge.log` en `%LOCALAPPDATA%\echowisp\` (anterior: `bridge.prev.log`): estados, errores y
-  contadores de la mezcla cada 10 s. Sin token.
-- Token del bot en `bridge.json`: `token_dpapi` contiene base64 de DPAPI con ámbito de usuario,
-  sin interfaz. El puente migra `token` en claro al cargar y reemplaza el archivo mediante
-  `bridge.json.tmp` + renombre. Si no puede descifrarlo en otra cuenta o PC, avisa a la card y
-  queda sin token. Configuración → Bot de Discord → Desvincular bot sale del canal, cierra el
-  gateway y borra el token persistido.
-- Medido en vivo (19045, 1 fuente): sin cortes, CPU ~0,1 %, 19 MB. Falta Win11 y 3 fuentes.
-- Compilar para iterar: `cargo build --profile rapido` (sin LTO, ~30 s; release con LTO tarda
-  20 min con poca RAM). Sin cmake en el PATH, `LIBOPUS_LIB_DIR` = `out` de libopus_sys en
+## Measurements
+- Discord bridge (`bridge/`), without VB-Cable: WASAPI process loopback by PID/tree, f32 stereo
+  48 kHz. Audio path (without its own thread or clock):
+  - `process_capture.rs`: one thread per app, wakes on the WASAPI event and writes directly to the mix
+    (no intermediate copy).
+  - `audio_mix.rs`: queue per app in arrival order; songbird pulls one 20 ms block (`Live`) from its mix
+    thread. No apps playing → silence immediately; with apps → waits for the full block from all of them
+    until the next 20 ms mark. Queue > 60 ms → trims 2 frames per block (clock drift); 100 ms cap.
+  - **Do not align by QPC**: the hourly cursor discarded everything as old if songbird lagged
+    (total silence, measured). Packets arrive contiguously (measured deviation 0).
+  - `serve.rs` opens and closes the output (`Shared::open/close`) on its thread, in order: an
+    asynchronous mixer close would cut the new output on reconnection.
+- Ducking (`mixer.rs`): when sending an app, session volume goes to `1e-4` with its own context and
+  capture gain to `1e4` (it is post-volume; mute silences it). Original volume per session in
+  `ruteo.json` v2; restored on deselection, leave, failure, EOF, and reopening after forced closure.
+  Volume change from Windows → that source stops and is not overwritten (tested, expected behavior).
+  App check every 1 s; the list is emitted to the card only if it changed.
+- **Test audio before requesting a live test**: `echowisp-bridge simular --pid N [--secs S]
+  [--espera S] [--out f.raw]` reads through the same path as songbird (RawAdapter → decoder, one packet
+  every 20 ms) and counts skips/silence on a tone. `--espera` plays the connected bot before selecting
+  the app. Test tone and scripts outside the repo (`notas/tono/`).
+- `bridge.log` in `%LOCALAPPDATA%\echowisp\` (previous: `bridge.prev.log`): states, errors, and mix
+  counters every 10 s. No token.
+- Bot token in `bridge.json`: `token_dpapi` contains base64 DPAPI with user scope, without UI. The bridge
+  migrates cleartext `token` on load and replaces the file through `bridge.json.tmp` + rename. If it cannot
+  decrypt under another account or PC, it warns the card and remains without a token. Settings → Discord Bot
+  → Unlink bot leaves the channel, closes the gateway, and deletes the persisted token.
+- Measured live (19045, 1 source): no dropouts, CPU ~0,1 %, 19 MB. Windows 11 and 3 sources remain.
+- Build for iteration: `cargo build --profile rapido` (without LTO, ~30 s; release with LTO takes
+  20 min with low RAM). Without cmake in PATH, `LIBOPUS_LIB_DIR` = `out` from libopus_sys in
   `target/release/build/` + `LIBOPUS_STATIC=1`.
-- `echowisp-bridge audio-probe`: diagnóstico sin Discord. `IAudioClient2` no existe en process
-  loopback (no pedir `POST_VOLUME_LOOPBACK`).
-- Exe: ~270 KB; ~2 MB privados. Brave (0.5.1, modelo normal): 8–9 procesos, ~300 MB privados reproduciendo.
+- `echowisp-bridge audio-probe`: diagnosis without Discord. `IAudioClient2` does not exist in process
+  loopback (do not request `POST_VOLUME_LOOPBACK`).
+- Exe: ~270 KB; ~2 MB private. Brave (0.5.1, normal model): 8–9 processes, ~300 MB private while playing.
 
-## Pendiente / ideas
-- Probar teclas multimedia (pueden estar tomadas por otra app).
-- Arranque con Windows (opcional, preguntar).
-- Reacomodar con DPI por monitor (`WM_DPICHANGED`).
-- Una isla pegada arriba fue descartada: se prefirió flotante arrastrable.
+## Pending / ideas
+- Test media keys (they may be taken by another app).
+- Start with Windows (optional, ask).
+- Reposition for per-monitor DPI (`WM_DPICHANGED`).
+- A pinned top island was discarded: a draggable floating window was preferred.
 
-## Renombre a Echowisp (0.5.0, 08-10)
-- "YTM" es marca de Google. Exes: `echowisp.exe`, `echowisp-bridge.exe`. Datos: `%LOCALAPPDATA%\echowisp`.
-- Migración: `brave::data_dir()` mueve `ytm-float` → `echowisp` una vez; si falla, usa la vieja y reintenta. El puente
-  usa la que exista. Instalador: mismo AppId, `UsePreviousAppDir=no`, borra `Programs\ytm-float` y accesos viejos;
-  AppMutex con los dos nombres.
-- **Al publicar: actualizar `/echowisp/version.json` y `/ytm-float/version.json`** (las 0.4.x leen el viejo).
-- **Avisos de terceros:** antes de publicar correr `scripts/notices.ps1`; genera
-  `THIRD-PARTY-NOTICES.txt` desde el árbol normal de dependencias para Windows x64 y el instalador
-  distribuye ese archivo junto con `LICENSE`.
+## Rename to Echowisp (0.5.0, 08-10)
+- “YTM” is a Google trademark. Exes: `echowisp.exe`, `echowisp-bridge.exe`. Data: `%LOCALAPPDATA%\echowisp`.
+- Migration: `brave::data_dir()` moves `ytm-float` → `echowisp` once; if it fails, uses the old one and retries.
+  The bridge uses whichever exists. Installer: same AppId, `UsePreviousAppDir=no`, removes `Programs\ytm-float`
+  and old shortcuts; AppMutex with both names.
+- **When publishing: update `/echowisp/version.json` and `/ytm-float/version.json`** (0.4.x reads the old one).
+- **Third-party notices:** before publishing, run `scripts/notices.ps1`; it generates
+  `THIRD-PARTY-NOTICES.txt` from the normal dependency tree for Windows x64 and the installer distributes
+  that file together with `LICENSE`.

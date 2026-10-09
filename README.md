@@ -1,120 +1,122 @@
 # Echowisp
 
-Reproductor flotante de YouTube Music para Windows 10, con puente de audio a Discord para partidas de rol (antes YTM Float). Un exe Win32 en Rust (~270 KB, ~2 MB de RAM)
-controla un navegador Chromium invisible (headless, perfil propio) por CDP. Los anuncios los saca la app.
+**English** · [Español](README.es.md)
 
-Descarga: [bertinilabs.xyz/echowisp](https://www.bertinilabs.xyz/echowisp/). Licencia MIT.
+Floating YouTube Music player for Windows 10, with an audio bridge to Discord for tabletop RPG sessions (formerly YTM Float). A Win32 exe in Rust (~270 KB, ~2 MB of RAM)
+drives an invisible Chromium browser (headless, its own profile) over CDP. The app removes ads itself.
 
-## Instalador
+Download: [bertinilabs.xyz/echowisp](https://www.bertinilabs.xyz/echowisp/). MIT license.
 
-Módulos a elección: card de YouTube Music (siempre), Discord en la card, puente a Discord (reemplaza
-Kenku FM). Navegador: cualquier Chromium detectado (Brave, Edge, Chrome, Vivaldi, Chromium); por defecto
-Brave si está y si no Edge, que viene con Windows. El bloqueo de anuncios es propio y anda con todos.
-Por usuario, sin permisos de administrador.
+## Installer
 
-## Discord: aviso para forks
+Optional modules: YouTube Music card (always), Discord in the card, Discord bridge (replaces
+Kenku FM). Browser: any detected Chromium (Brave, Edge, Chrome, Vivaldi, Chromium); by default
+Brave if present, otherwise Edge, which ships with Windows. Ad blocking is built in and works with all of them.
+Per-user install, no administrator rights.
 
-El módulo de Discord **solo abre Discord web en una ventana normal del navegador**. No inyecta scripts,
-no lee el estado interno de Discord, no aprieta botones por el usuario y la ventana se abre sin puerto
-de depuración. Lo hicimos así a propósito: automatizar una cuenta de usuario (self-bot) o modificar el
-cliente de Discord (scripts, CSS, extensiones) va contra sus
-[Términos](https://discord.com/terms) y puede terminar en la **suspensión de la cuenta**.
+## Discord: note for forks
 
-Si forkeás el proyecto, tené cuidado con `launch_discord` (`src/brave.rs`) y la fila de Discord de la
-card: agregar controles "dentro" de la card (mute, ensordecer, canal, quién habla) leyendo o manejando
-Discord web pone en riesgo la cuenta de quien lo use. Lo intentamos y lo sacamos por eso. Los flags del
-navegador (memoria, GPU) son configuración de nuestro Brave y no tocan Discord.
+The Discord module **only opens Discord web in a normal browser window**. It does not inject scripts,
+read Discord's internal state or press buttons for the user, and the window opens without a debugging
+port. This is deliberate: automating a user account (self-bot) or modifying the Discord client
+(scripts, CSS, extensions) is against Discord's [Terms](https://discord.com/terms) and can get the
+**account suspended**.
 
-El puente (`bridge/`) usa un **bot** con su propio token y la API oficial para bots: no usa la cuenta
-del usuario.
+If you fork the project, be careful with `launch_discord` (`src/brave.rs`) and the card's Discord row:
+adding controls "inside" the card (mute, deafen, channel, who is speaking) by reading or driving
+Discord web puts the user's account at risk. We tried it and removed it for that reason. The browser
+flags (memory, GPU) configure our own Brave and do not touch Discord.
 
-### Audio de aplicaciones en el puente
+The bridge (`bridge/`) uses a **bot** with its own token and the official bot API: it does not use the
+user's account.
 
-El puente captura las apps elegidas por su árbol de procesos con WASAPI process loopback. No requiere
-VB-Cable, driver ni permisos de administrador. En la card de apps, activá las fuentes que querés enviar;
-su barra regula la ganancia del envío, sin cambiar el volumen que elegiste en Windows. Se pueden mezclar
-varias fuentes. El bot solo transmite audio: no recibe las voces del canal.
+### App audio in the bridge
 
-Mientras una fuente transmite, el puente baja su volumen de sesión en Windows a `0,0001` (−80 dB)
-y compensa ese factor en el audio enviado. No usa mute: en Windows 10 22H2 build 19045, la prueba
-offline confirmó que mute también silencia la captura. Al deseleccionar, salir o cerrar, restaura el
-volumen anterior. Si detecta que el volumen cambió desde Windows durante el envío, detiene esa fuente
-y conserva el nuevo valor. `ruteo.json` permite recuperar el volumen tras un cierre forzado y migra
-ruteos pendientes de versiones anteriores.
+The bridge captures the chosen apps by process tree with WASAPI process loopback. It needs no
+VB-Cable, driver or administrator rights. In the apps card, turn on the sources you want to send;
+each slider sets the send gain without changing the volume you chose in Windows. Several sources can
+be mixed. The bot only sends audio: it does not receive voices from the channel.
 
-Una app sin sesión de audio compartida activa (incluido el modo exclusivo), una sesión silenciada o
-con volumen cero, o un árbol que se solapa con Discord u otra fuente produce un error visible; el
-puente no cambia a captura global. Probado en Windows 10 22H2; falta Windows 11.
+While a source is sending, the bridge lowers its Windows session volume to `0.0001` (−80 dB)
+and compensates for that factor in the sent audio. It does not use mute: on Windows 10 22H2 build 19045,
+offline testing confirmed that mute also silences the capture. On deselect, exit or close, it restores
+the previous volume. If the volume is changed from Windows while sending, it stops that source and
+keeps the new value. `ruteo.json` restores the volume after a forced shutdown and migrates pending
+routes from earlier versions.
 
-Si algo suena mal, `%LOCALAPPDATA%\echowisp\bridge.log` registra estados, errores y cada 10 s los
-contadores de la mezcla.
+An app without an active shared audio session (including exclusive mode), a muted or zero-volume
+session, or a process tree that overlaps Discord or another source produces a visible error; the
+bridge never falls back to global capture. Tested on Windows 10 22H2; Windows 11 pending.
 
-## Uso
+If something sounds wrong, `%LOCALAPPDATA%\echowisp\bridge.log` records states, errors and, every 10 s,
+the mix counters.
 
-- Acceso directo: menú Inicio → **Echowisp** (el de escritorio de YTM Float, si existía, se reemplaza). Instalado en `%LOCALAPPDATA%\Programs\echowisp\`.
-- Primera vez: ícono de usuario (ámbar) → se abre Brave una sola vez → iniciar sesión en Google → cerrar esa ventana.
-- Escribir busca · Enter reproduce · Shift+Enter radio · ↑/↓ elige · Esc limpia · Espacio (buscador vacío) play/pausa · Ctrl+V pega.
-- Clic en la barra: salta a ese punto. Arrastrar desde el título mueve la ventana (recuerda la posición).
-- Doble clic en canción/artista: colapsa la tarjeta a ese tamaño; otro doble clic la abre.
-- Volumen: barra bajo el progreso (clic o arrastre), ícono = silenciar, rueda sobre la tarjeta ±5.
-- Botones: aleatorio (mezcla la cola), anterior, play, siguiente, repetir (no → lista → canción).
-- Engranaje (arriba a la izquierda): configuración en una card que sale al costado. Apariencia: color de fondo y acento (hex o paleta); la card es translúcida con el fondo desenfocado por Windows. Se guarda en `theme.json`.
-- Bajo el buscador: Listas (playlists de la cuenta), Escuchar otra vez y Selección rápida (estantes de la portada). Tocar la activa la cierra.
+## Usage
 
-### Atajos globales (andan dentro de juegos)
+- Shortcut: Start menu → **Echowisp** (the YTM Float desktop shortcut, if any, is replaced). Installed in `%LOCALAPPDATA%\Programs\echowisp\`.
+- First run: user icon (amber) → Brave opens once → sign in to Google → close that window.
+- Typing searches · Enter plays · Shift+Enter radio · ↑/↓ select · Esc clears · Space (empty search box) play/pause · Ctrl+V pastes.
+- Click on the bar: jump to that point. Drag the title to move the window (position is remembered).
+- Double-click on song/artist: collapses the card to that size; double-click again to expand.
+- Volume: bar under the progress bar (click or drag), icon = mute, mouse wheel over the card ±5.
+- Buttons: shuffle (shuffles the queue), previous, play, next, repeat (off → list → song).
+- Gear (top left): settings in a card that opens to the side. Appearance: background and accent color (hex or palette); the card is translucent with the background blurred by Windows. Saved in `theme.json`.
+- Under the search box: Playlists (the account's playlists), Listen again and Quick picks (home page shelves). Tapping the active one closes it.
 
-| Atajo | Acción |
+### Global hotkeys (work inside games)
+
+| Hotkey | Action |
 |---|---|
-| Ctrl+Alt+Espacio | Play / pausa |
-| Ctrl+Alt+→ / ← | Siguiente / anterior |
-| Ctrl+Alt+H | Mostrar / ocultar |
-| Ctrl+Alt+N | Colapsar / expandir |
-| Ctrl+Alt+B | Mostrar y buscar |
-| Teclas multimedia | Igual que arriba (si ninguna otra app las tomó) |
+| Ctrl+Alt+Space | Play / pause |
+| Ctrl+Alt+→ / ← | Next / previous |
+| Ctrl+Alt+H | Show / hide |
+| Ctrl+Alt+N | Collapse / expand |
+| Ctrl+Alt+B | Show and search |
+| Media keys | Same as above (if no other app took them) |
 
-En juegos: usar "pantalla completa en ventana" / sin bordes. En pantalla completa exclusiva solo andan los atajos.
+In games: use "windowed fullscreen" / borderless. In exclusive fullscreen only the hotkeys work.
 
-## Compilar
+## Build
 
 ```
 cargo build --release
 copy target\release\echowisp.exe %LOCALAPPDATA%\Programs\echowisp\
 ```
 
-Cerrar Echowisp antes (el exe en uso no se puede reemplazar).
-Antes de publicar, `scripts/notices.ps1`.
+Close Echowisp first (an exe in use cannot be replaced).
+Before publishing, run `scripts/notices.ps1`.
 
-## Archivos de datos (`%LOCALAPPDATA%\echowisp\`)
+## Data files (`%LOCALAPPDATA%\echowisp\`)
 
-- `perfil\` — perfil dedicado del navegador (sesión de Google).
-- `pos.txt` — posición de la ventana. `brave.pid` — para cerrar un Brave huérfano.
-- `engine.log` — errores de sesión CDP. `panic.txt` — último panic de Rust.
-- `perfil-discord\` — sesión de Discord web (módulo Discord). `bridge.json` — token del bot y última
-  selección (módulo puente). `ruteo.json` — volumen original de las apps enviadas.
+- `perfil\` — dedicated browser profile (Google session).
+- `pos.txt` — window position. `brave.pid` — to close an orphaned Brave.
+- `engine.log` — CDP session errors. `panic.txt` — last Rust panic.
+- `perfil-discord\` — Discord web session (Discord module). `bridge.json` — bot token and last
+  selection (bridge module). `ruteo.json` — original volume of the sent apps.
 
-Desinstalar no borra esta carpeta: para borrar sesiones y token, eliminarla a mano.
+Uninstalling does not delete this folder: to remove sessions and the token, delete it by hand.
 
-## Privacidad
+## Privacy
 
-Echowisp no tiene telemetría ni cuentas propias. Se conecta a:
+Echowisp has no telemetry and no accounts of its own. It connects to:
 
-- **YouTube Music y Google**, desde el navegador, con tu sesión (como cualquier navegador).
-- **Discord**, si usás esos módulos: la ventana es Discord web; el puente usa tu bot.
-- **www.bertinilabs.xyz**, al abrir: lee `echowisp/version.json` para saber si hay una versión nueva.
-  No manda datos tuyos; el servidor ve la IP como en cualquier visita.
-- **reportes.bertinilabs.xyz**, solo si tocás "Reportar un problema": manda el texto que escribís,
-  el mail si lo dejás y, si lo marcás, datos técnicos (versión de Windows y el final del log, sin la
-  carpeta del usuario). Se guarda en el servidor (Cloudflare) y le llega al desarrollador por un canal
-  privado de Discord. Se usa solo para resolver el problema.
+- **YouTube Music and Google**, from the browser, with your session (like any browser).
+- **Discord**, if you use those modules: the window is Discord web; the bridge uses your bot.
+- **www.bertinilabs.xyz**, on launch: reads `echowisp/version.json` to check for a new version.
+  It sends no data about you; the server sees your IP as on any visit.
+- **reportes.bertinilabs.xyz**, only if you tap "Report a problem": it sends the text you write,
+  your email if you leave it and, if you check the box, technical data (Windows version and the end of
+  the log, without the user folder). It is stored on the server (Cloudflare) and reaches the developer
+  through a private Discord channel. It is used only to fix the problem.
 
 ## Code signing policy
 
-Política de firma de código. Los binarios publicados se compilan con
-[`.github/workflows/release.yml`](.github/workflows/release.yml) desde este repositorio. Free code
+The published binaries are built with
+[`.github/workflows/release.yml`](.github/workflows/release.yml) from this repository. Free code
 signing provided by [SignPath.io](https://signpath.io), certificate by
-[SignPath Foundation](https://signpath.org) (solicitado; hasta que se apruebe, los instaladores van sin firmar).
+[SignPath Foundation](https://signpath.org) (applied for; until approved, installers are unsigned).
 
-- Autores (committers) y revisores: [Joabertini](https://github.com/Joabertini).
-- Aprobadores de cada firma: [Joabertini](https://github.com/Joabertini).
+- Authors (committers) and reviewers: [Joabertini](https://github.com/Joabertini).
+- Approvers for each signature: [Joabertini](https://github.com/Joabertini).
 
-Cada release se aprueba a mano. Privacidad: ver la sección de arriba.
+Each release is approved by hand. Privacy: see the section above.
