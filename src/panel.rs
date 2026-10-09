@@ -203,10 +203,8 @@ impl App {
                         y += P_ROW;
                     }
                 }
-                if !matches!(self.upd, update::State::None) {
-                    row(PHit::Update, 12, PW - 12, y + 6, y + 36, &mut v);
-                    y += 40;
-                }
+                row(PHit::Update, 12, PW - 12, y + 6, y + 36, &mut v);
+                y += 40;
                 row(PHit::Report, 12, PW - 12, y + 6, y + 36, &mut v);
                 y += 40;
             }
@@ -476,12 +474,15 @@ impl App {
                         }
                     }
                     PHit::Update => {
+                        // Al dia o consultando: solo texto. Boton cuando hay algo que tocar.
                         let c = match &self.upd {
-                            update::State::Ready(_) if hov == hit => th().accent,
-                            update::State::Ready(_) => GREEN,
-                            _ => th().tab,
+                            update::State::Ready(_) if hov == hit => Some(th().accent),
+                            update::State::Ready(_) => Some(GREEN),
+                            update::State::None | update::State::Current => None,
+                            update::State::Unknown if hov != hit => None,
+                            _ => Some(th().tab),
                         };
-                        cv.round(l, t, rr, b, self.pf(10.0), c);
+                        if let Some(c) = c { cv.round(l, t, rr, b, self.pf(10.0), c); }
                     }
                     PHit::Token | PHit::Invite | PHit::Report => cv.round(l, t, rr, b, self.pf(10.0), if hov == hit { th().accent } else { th().tab }),
                     PHit::RText | PHit::RContact => {
@@ -580,14 +581,18 @@ impl App {
                     PHit::Invite => cv.text(self.f.small, "Invitar el bot a un servidor", z, th().ink, DT_CENTER),
                     PHit::Report => cv.text(self.f.small, "Reportar un problema", z, th().ink, DT_CENTER),
                     PHit::Update => {
+                        let v = env!("CARGO_PKG_VERSION");
                         let t = match &self.upd {
                             update::State::Ready(i) => format!("Actualizar a {}", i.version),
+                            update::State::None => format!("Versión {v} · buscando novedades…"),
+                            update::State::Current => format!("Versión {v} · al día"),
+                            update::State::Unknown => format!("Versión {v} · sin conexión (reintentar)"),
                             update::State::Busy(p, _) if *p >= 100 => "Instalando…".to_string(),
                             update::State::Busy(p, _) => format!("Bajando… {p} %"),
                             update::State::Error(e, _) => format!("{e} · reintentar"),
-                            update::State::None => String::new(),
                         };
-                        cv.text(self.f.small, &t, z, th().ink, DT_CENTER);
+                        let ink = if matches!(self.upd, update::State::None | update::State::Current | update::State::Unknown) { th().dim } else { th().ink };
+                        cv.text(self.f.small, &t, z, ink, DT_CENTER);
                     }
                     PHit::Note(t) => cv.text_wrap(self.f.small, t, z, th().dim),
                     PHit::RStatus => cv.text_wrap(self.f.small, &self.rep.error, z, RED),
@@ -721,6 +726,12 @@ impl App {
             PHit::Update => {
                 let info = match &self.upd {
                     update::State::Ready(i) | update::State::Error(_, i) => i.clone(),
+                    update::State::Unknown => {
+                        self.upd = update::State::None;
+                        update::check(self.hwnd as isize);
+                        self.panel_render();
+                        return;
+                    }
                     _ => return,
                 };
                 self.upd = update::State::Busy(0, info.clone());
@@ -790,6 +801,12 @@ impl App {
             update::Msg::Available(i) => {
                 self.flash(&format!("Hay una versión nueva ({}): Configuración", i.version));
                 self.upd = update::State::Ready(i);
+            }
+            update::Msg::UpToDate => self.upd = update::State::Current,
+            update::Msg::Offline => {
+                if matches!(self.upd, update::State::None) {
+                    self.upd = update::State::Unknown;
+                }
             }
             update::Msg::Progress(p) => {
                 if let update::State::Busy(pct, _) = &mut self.upd {
@@ -934,7 +951,7 @@ pub unsafe extern "system" fn panel_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: L
 
 /// Crea la ventana de costado (oculta), duenia de la card: queda siempre arriba de ella.
 pub unsafe fn create(owner: HWND, hinst: HINSTANCE) -> HWND {
-    let cls = wide("ytm-float-panel");
+    let cls = wide("echowisp-panel");
     let wc = WNDCLASSW { lpfnWndProc: Some(panel_proc), hInstance: hinst, hCursor: LoadCursorW(null_mut(), IDC_ARROW), lpszClassName: cls.as_ptr(), ..zeroed() };
     RegisterClassW(&wc);
     CreateWindowExW(WS_EX_LAYERED | WS_EX_TOPMOST | WS_EX_TOOLWINDOW, cls.as_ptr(), wide("YTM panel").as_ptr(), WS_POPUP, 0, 0, 1, 1, owner, null_mut(), hinst, null())

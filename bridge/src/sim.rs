@@ -1,4 +1,4 @@
-//! `ytm-bridge simular --pid N [--secs S] [--out f.raw]`: prueba de la cadena de audio sin Discord.
+//! `echowisp-bridge simular --pid N [--secs S] [--out f.raw]`: prueba de la cadena de audio sin Discord.
 //! Captura la app como en vivo y la lee con el mismo camino que songbird (RawAdapter → formato
 //! crudo → decodificador) al mismo ritmo: un paquete, dormir hasta la próxima marca de 20 ms.
 //! Pensado para un tono senoidal: cuenta saltos (crujidos) y silencios en la salida.

@@ -1,22 +1,25 @@
-; Instalador modular de YTM Float. Compilar: ISCC installer\ytm-float.iss (despues de cargo build --release
+; Instalador modular de Echowisp. Compilar: ISCC installer\echowisp.iss (despues de cargo build --release
 ; en la raiz y en bridge\). Por usuario, sin admin. Navegador: cualquier Chromium detectado (Brave si esta;
 ; si no, Edge, que viene con Windows). Silencioso: /NAVEGADOR=ruta-al-exe.
-#define AppVer "0.4.0"
+#define AppVer "0.5.0"
 
 [Setup]
 AppId={{6B1F3C2E-9D4A-4E7B-8C51-2F0A9E7D3B14}
-AppName=YTM Float
+AppName=Echowisp
 AppVersion={#AppVer}
 AppPublisher=bertinilabs
-AppPublisherURL=https://www.bertinilabs.xyz/ytm-float/
-DefaultDirName={localappdata}\Programs\ytm-float
-DefaultGroupName=YTM Float
+AppPublisherURL=https://www.bertinilabs.xyz/echowisp/
+; Mismo AppId que YTM Float (es una actualizacion), pero carpeta nueva: no reusar la vieja.
+DefaultDirName={localappdata}\Programs\echowisp
+UsePreviousAppDir=no
+DefaultGroupName=Echowisp
 DisableProgramGroupPage=yes
 PrivilegesRequired=lowest
-AppMutex=ytm-float-instancia
+; La card vieja (0.4.x) usa ytm-float-instancia.
+AppMutex=echowisp-instancia,ytm-float-instancia
 OutputDir=..\target\instalador
-OutputBaseFilename=ytm-float-setup-{#AppVer}
-UninstallDisplayIcon={app}\ytm-float.exe
+OutputBaseFilename=echowisp-setup-{#AppVer}
+UninstallDisplayIcon={app}\echowisp.exe
 Compression=lzma2/max
 SolidCompression=yes
 ArchitecturesAllowed=x64compatible
@@ -40,34 +43,47 @@ Name: "puente"; Description: "Puente a Discord (audio de apps → bot, sin cable
 Name: "inicio"; Description: "Abrir con Windows"; Flags: unchecked
 
 [Files]
-Source: "..\target\release\ytm-float.exe"; DestDir: "{app}"; Flags: ignoreversion; Components: musica
+Source: "..\target\release\echowisp.exe"; DestDir: "{app}"; Flags: ignoreversion; Components: musica
 Source: "discord.module"; DestDir: "{app}"; Components: discord
-Source: "..\bridge\target\release\ytm-bridge.exe"; DestDir: "{app}"; Flags: ignoreversion; Components: puente
+Source: "..\bridge\target\release\echowisp-bridge.exe"; DestDir: "{app}"; Flags: ignoreversion; Components: puente
 
 [InstallDelete]
 ; Al reinstalar sin un modulo, se saca lo que habia quedado.
 Type: files; Name: "{app}\discord.module"; Check: not WizardIsComponentSelected('discord')
-Type: files; Name: "{app}\ytm-bridge.exe"; Check: not WizardIsComponentSelected('puente')
+Type: files; Name: "{app}\echowisp-bridge.exe"; Check: not WizardIsComponentSelected('puente')
 ; Brave Origin portatil de versiones viejas: en Windows es pago y abre una ventana de compra.
 Type: filesandordirs; Name: "{app}\brave"
+; Instalacion de YTM Float (hasta 0.4.x): carpeta y accesos directos viejos.
+Type: filesandordirs; Name: "{localappdata}\Programs\ytm-float"
+Type: files; Name: "{autoprograms}\YTM Float.lnk"
+Type: files; Name: "{userstartup}\YTM Float.lnk"
+; El de escritorio lo crea el usuario a mano: apuntaria a la carpeta borrada. Se reemplaza (ver [Icons]).
+Type: files; Name: "{userdesktop}\YTM Float.lnk"
 
 [UninstallDelete]
 Type: filesandordirs; Name: "{app}\brave"
 Type: files; Name: "{app}\navegador.txt"
 
 [Icons]
-Name: "{autoprograms}\YTM Float"; Filename: "{app}\ytm-float.exe"
-Name: "{userstartup}\YTM Float"; Filename: "{app}\ytm-float.exe"; Tasks: inicio
+Name: "{autoprograms}\Echowisp"; Filename: "{app}\echowisp.exe"
+Name: "{userstartup}\Echowisp"; Filename: "{app}\echowisp.exe"; Tasks: inicio
+Name: "{userdesktop}\Echowisp"; Filename: "{app}\echowisp.exe"; Check: HabiaEscritorio
 
 [Run]
-Filename: "{app}\ytm-float.exe"; Description: "Abrir YTM Float"; Flags: postinstall nowait skipifsilent
+Filename: "{app}\echowisp.exe"; Description: "Abrir Echowisp"; Flags: postinstall nowait skipifsilent
 ; Actualizacion desde la card (/RELANZAR=1, silenciosa): se vuelve a abrir sola.
-Filename: "{app}\ytm-float.exe"; Flags: nowait; Check: Relanzar
+Filename: "{app}\echowisp.exe"; Flags: nowait; Check: Relanzar
 
 [Code]
 var
   Pagina: TInputOptionWizardPage;
   Rutas: TStringList; { ruta de cada opcion }
+  Escritorio: Boolean; { habia acceso directo viejo en el escritorio (se borra antes de crear los nuevos) }
+
+function HabiaEscritorio(): Boolean;
+begin
+  Result := Escritorio;
+end;
 
 function AppPath(Root: Integer; Exe: String): String;
 begin
@@ -107,10 +123,11 @@ procedure InitializeWizard;
 var
   Param: String;
 begin
+  Escritorio := FileExists(ExpandConstant('{userdesktop}\YTM Float.lnk'));
   Rutas := TStringList.Create;
   Pagina := CreateInputOptionPage(wpSelectComponents, 'Navegador',
-    'YTM Float reproduce con un navegador sin ventana. ¿Cuál uso?',
-    'YTM Float saca los anuncios por su cuenta: anda igual con cualquiera. Si no tenés preferencia, dejá el marcado.',
+    'Echowisp reproduce con un navegador sin ventana. ¿Cuál uso?',
+    'Echowisp saca los anuncios por su cuenta: anda igual con cualquiera. Si no tenés preferencia, dejá el marcado.',
     True, False);
   { Orden de preferencia: Brave si esta; si no, Edge (viene con Windows). }
   Agregar('Brave', Buscar('brave.exe', 'BraveSoftware\Brave-Browser\Application\brave.exe'));

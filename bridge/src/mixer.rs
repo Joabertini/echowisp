@@ -53,7 +53,7 @@ impl Policy {
 }
 
 fn data_path() -> PathBuf {
-    PathBuf::from(std::env::var("LOCALAPPDATA").unwrap_or_default()).join("ytm-float").join("ruteo.json")
+    crate::data_dir().join("ruteo.json")
 }
 
 fn pid_file(name: &str) -> u32 {
@@ -166,7 +166,7 @@ fn apps(en: &IMMDeviceEnumerator) -> Vec<App> {
                 CoTaskMemFree(Some(ptr.0 as _));
                 match out.iter_mut().find(|a| a.pid == pid) {
                     Some(a) => a.sessions.push(Session { id, vol, control }),
-                    None => out.push(App { pid, birth, exe, name: if ytm != 0 && descendant(pid, ytm, &parents) { "Música (YTM Float)".into() } else { stem }, sessions: vec![Session { id, vol, control }] }),
+                    None => out.push(App { pid, birth, exe, name: if ytm != 0 && descendant(pid, ytm, &parents) { "Música (Echowisp)".into() } else { stem }, sessions: vec![Session { id, vol, control }] }),
                 }
             }
         }
