@@ -97,7 +97,7 @@ impl Engine {
     pub fn call(&self, cmd: &str, arg: Value, tag: u32) {
         let ctx = self.ctx.load(SeqCst);
         if ctx == 0 {
-            self.post(Ev::Reply(tag, json!({ "ok": false, "error": "Todavía cargando…" })));
+            self.post(Ev::Reply(tag, json!({ "ok": false, "error": crate::i18n::t("still_loading") })));
             return;
         }
         let id = self.next.fetch_add(1, SeqCst);
@@ -128,23 +128,23 @@ impl Engine {
 
     fn run(self: Arc<Self>) {
         let Some(exe) = brave::find_brave() else {
-            self.post(Ev::Status("No encontré el navegador (reinstalá y elegí uno)".into()));
+            self.post(Ev::Status(crate::i18n::t("browser_missing").into()));
             return;
         };
         while !self.exiting.load(SeqCst) {
             if self.login.load(SeqCst) {
-                self.post(Ev::Status("Iniciá sesión en la ventana de Brave y cerrala al terminar".into()));
+                self.post(Ev::Status(crate::i18n::t("login_prompt").into()));
                 match brave::launch_login(&exe, YTM_LOGIN) {
                     Ok(p) => {
                         p.wait(u32::MAX);
                     }
-                    Err(e) => self.post(Ev::Status(format!("Error al abrir Brave: {e}"))),
+                    Err(e) => self.post(Ev::Status(format!("{}{}", crate::i18n::t("brave_launch_failed"), crate::i18n::runtime_error(&e.to_string())))),
                 }
                 self.login.store(false, SeqCst);
                 continue;
             }
             if !self.quiet.load(SeqCst) {
-                self.post(Ev::Status("Iniciando YouTube Music…".into()));
+                self.post(Ev::Status(crate::i18n::t("starting_ytm").into()));
             }
             let recycling = match self.session(&exe) {
                 Err(e) if e.kind() == io::ErrorKind::Interrupted => true,
@@ -152,7 +152,7 @@ impl Engine {
                     log(&format!("sesión: {e}"));
                     self.quiet.store(false, SeqCst);
                     if !self.exiting.load(SeqCst) && !self.login.load(SeqCst) {
-                        self.post(Ev::Status(format!("Reconectando ({e})")));
+                        self.post(Ev::Status(format!("{} ({})", crate::i18n::t("reconnecting"), crate::i18n::runtime_error(&e.to_string()))));
                         thread::sleep(Duration::from_secs(2));
                     }
                     false

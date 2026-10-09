@@ -38,6 +38,7 @@ pub enum PHit {
     Token,
     Browser(usize),
     Hotkey(usize),
+    Language(i18n::Lang),
     Report,
     Update,
     Note(&'static str),
@@ -50,18 +51,18 @@ pub enum PHit {
 
 /// Atajos que se pueden cambiar (los multimedia no).
 pub const EDITABLE: &[(i32, &str)] = &[
-    (HK_TOGGLE, "Play / pausa"),
-    (HK_NEXT, "Siguiente"),
-    (HK_PREV, "Anterior"),
-    (HK_SHOW, "Mostrar / ocultar"),
-    (HK_MINI, "Colapsar"),
-    (HK_SEARCH, "Buscar"),
+    (HK_TOGGLE, "play_pause"),
+    (HK_NEXT, "next"),
+    (HK_PREV, "previous"),
+    (HK_SHOW, "show_hide"),
+    (HK_MINI, "collapse"),
+    (HK_SEARCH, "search"),
 ];
 
 // Paletas rapidas (COLORREF); el campo hex permite cualquier otro color.
 const PRESET_SOLID: [u32; 7] = [rgb(0, 0, 0), rgb(0x0d, 0x0f, 0x14), rgb(0x0b, 0x12, 0x20), rgb(0x1a, 0x0f, 0x14), rgb(0x0c, 0x15, 0x11), rgb(0x1f, 0x1f, 0x22), rgb(0xf4, 0xf1, 0xea)];
 const PRESET_ACCENT: [u32; 7] = [rgb(0x63, 0x66, 0xf1), rgb(0x8b, 0x5c, 0xf6), rgb(0xec, 0x48, 0x99), rgb(0xf9, 0x73, 0x16), rgb(0x22, 0xc5, 0x5e), rgb(0x06, 0xb6, 0xd4), rgb(0xea, 0xb3, 0x08)];
-const SECTIONS: [&str; 6] = ["EN LA CARD", "APARIENCIA", "BOT DE DISCORD", "CAPTURA POR APP", "NAVEGADOR", "ATAJOS"];
+const SECTIONS: [&str; 6] = ["section_card", "section_appearance", "section_bot", "section_capture", "section_browser", "section_hotkeys"];
 
 /// Dos colores casi iguales (para marcar un circulo que se confundiria con el fondo).
 fn lum_close(a: u32, b: u32) -> bool {
@@ -81,20 +82,25 @@ pub fn key_name(mods: HOT_KEY_MODIFIERS, vk: u32) -> String {
         }
     }
     let k = match vk as u16 {
-        VK_SPACE => "Espacio".into(),
+        VK_SPACE => t("space").into(),
         VK_LEFT => "←".into(),
         VK_RIGHT => "→".into(),
         VK_UP => "↑".into(),
         VK_DOWN => "↓".into(),
         v @ 0x30..=0x39 | v @ 0x41..=0x5A => (v as u8 as char).to_string(),
         v @ VK_F1..=VK_F12 => format!("F{}", v - VK_F1 + 1),
-        v => format!("tecla {v:#x}"),
+        v => format!("{} {v:#x}", t("key")),
     };
     s + &k
 }
 
 fn card_file() -> std::path::PathBuf {
     brave::data_dir().join("card.json")
+}
+
+fn save_card_prefs(show_br: bool, show_dsc: bool) {
+    let language = if i18n::current() == i18n::Lang::Es { "es" } else { "en" };
+    let _ = std::fs::write(card_file(), json!({ "puente": show_br, "discord": show_dsc, "idioma": language }).to_string());
 }
 
 /// Fila opcional a la vista en la card ("puente" | "discord"). Por defecto si.
@@ -127,10 +133,10 @@ impl App {
         match self.panel {
             Panel::Apps => {
                 if !self.mix_available {
-                    row(PHit::Msg("Captura por app no disponible"), 12, PW - 12, y, y + P_ROW, &mut v);
+                    row(PHit::Msg("app_capture_unavailable"), 12, PW - 12, y, y + P_ROW, &mut v);
                     y += P_ROW;
                 } else if self.mix_apps.is_empty() {
-                    row(PHit::Msg("Sin salida compartida activa"), 12, PW - 12, y, y + P_ROW, &mut v);
+                    row(PHit::Msg("no_shared_output"), 12, PW - 12, y, y + P_ROW, &mut v);
                     y += P_ROW;
                 } else {
                     for (i, a) in self.mix_apps.iter().enumerate() {
@@ -155,16 +161,17 @@ impl App {
                     *y += 28;
                 };
                 let open = |i: usize| self.sec_open[i];
-                if self.br.is_some() || self.dsc_avail {
-                    head(0, &mut y, &mut v);
-                    if open(0) {
-                        for (h, ok) in [(PHit::ShowBr, self.br.is_some()), (PHit::ShowDsc, self.dsc_avail)] {
-                            if ok {
-                                row(h, 12, PW - 12, y, y + P_ROW, &mut v);
-                                y += P_ROW;
-                            }
+                head(0, &mut y, &mut v);
+                if open(0) {
+                    for (h, ok) in [(PHit::ShowBr, self.br.is_some()), (PHit::ShowDsc, self.dsc_avail)] {
+                        if ok {
+                            row(h, 12, PW - 12, y, y + P_ROW, &mut v);
+                            y += P_ROW;
                         }
                     }
+                    row(PHit::Language(i18n::Lang::Es), 12, PW / 2, y, y + P_ROW, &mut v);
+                    row(PHit::Language(i18n::Lang::En), PW / 2, PW - 12, y, y + P_ROW, &mut v);
+                    y += P_ROW;
                 }
                 head(1, &mut y, &mut v);
                 if open(1) {
@@ -190,7 +197,7 @@ impl App {
                         }
                     }
                     head(3, &mut y, &mut v);
-                    if open(3) { row(PHit::Msg("Audio de apps · sin cable virtual"), 12, PW - 12, y, y + P_ROW, &mut v); y += P_ROW; }
+                    if open(3) { row(PHit::Msg("app_audio_note"), 12, PW - 12, y, y + P_ROW, &mut v); y += P_ROW; }
                 }
                 head(4, &mut y, &mut v);
                 if open(4) {
@@ -212,7 +219,7 @@ impl App {
                 y += 40;
             }
             Panel::Report => {
-                row(PHit::Note("Contanos qué pasó. Le llega directo a quien hace la app."), 16, PW - 16, y, y + 32, &mut v);
+                row(PHit::Note("report_note"), 16, PW - 16, y, y + 32, &mut v);
                 y += 38;
                 row(PHit::RText, 12, PW - 12, y, y + 104, &mut v);
                 y += 112;
@@ -518,12 +525,13 @@ impl App {
                         let k = (sb - st) / 2.0 - self.pf(2.5);
                         cv.dot(if on { sr - (sb - st) / 2.0 } else { sl + (sb - st) / 2.0 }, (st + sb) / 2.0, k, th().ink);
                     }
-                    PHit::App(_) | PHit::Browser(_) | PHit::Hotkey(_) => {
+                    PHit::App(_) | PHit::Browser(_) | PHit::Hotkey(_) | PHit::Language(_) => {
                         if hov == hit || self.panel_capture.is_some_and(|c| hit == PHit::Hotkey(c)) {
                             cv.round(l, t, rr, b, self.pf(8.0), th().hover);
                         }
                         let sel = match hit {
                             PHit::Browser(i) => Some(self.browsers[i].1 == self.browser_cur),
+                            PHit::Language(lang) => Some(i18n::current() == lang),
                             _ => None,
                         };
                         if let Some(sel) = sel {
@@ -540,9 +548,9 @@ impl App {
             GdiFlush();
             // Texto
             let title = match self.panel {
-                Panel::Apps => "Apps a Discord",
-                Panel::Report => "Reportar un problema",
-                _ => "Configuración",
+                Panel::Apps => t("apps_title"),
+                Panel::Report => t("report_title"),
+                _ => t("settings"),
             };
             cv.text(self.f.title, title, self.r(16, 8, PW - 40, 32), th().ink, DT_LEFT);
             cv.text(self.f.icon, "\u{E8BB}", self.r(PW - 36, 4, PW - 8, 32), if hov == PHit::Close { th().ink } else { th().dim }, DT_CENTER);
@@ -551,12 +559,12 @@ impl App {
                 let inset = RECT { left: z.left + self.px(30), right: z.right - self.px(8), ..z };
                 match hit {
                     PHit::Section(i) => {
-                        cv.text(self.f.small, SECTIONS[i], RECT { left: z.left + self.px(4), ..z }, th().dim3, DT_LEFT);
+                        cv.text(self.f.small, t(SECTIONS[i]), RECT { left: z.left + self.px(4), ..z }, th().dim3, DT_LEFT);
                         let ch = if self.sec_open[i] { "\u{E70E}" } else { "\u{E70D}" };
                         cv.text(self.f.icon, ch, RECT { left: z.right - self.px(24), ..z }, th().dim3, DT_CENTER);
                     }
                     PHit::Color(w) => {
-                        let name = if w == 1 { "Acento" } else { "Fondo" };
+                        let name = if w == 1 { t("accent") } else { t("background") };
                         cv.text(self.f.small, name, RECT { left: z.left + self.px(10), ..z }, th().ink, DT_LEFT);
                         let val = match &self.panel_edit {
                             Some((e, buf, _)) if *e == w => format!("#{buf}_"),
@@ -565,47 +573,48 @@ impl App {
                         let c = if self.panel_edit.as_ref().is_some_and(|e| e.0 == w) { AMBER } else { th().dim };
                         cv.text(self.f.small, &val, RECT { right: z.right - self.px(32), ..z }, c, DT_RIGHT);
                     }
-                    PHit::Msg(t) => cv.text(self.f.small, t, z, th().dim, DT_CENTER),
+                    PHit::Msg(key) => cv.text(self.f.small, t(key), z, th().dim, DT_CENTER),
                     PHit::MixError => cv.text_wrap(self.f.small, &self.mix_err, z, RED),
                     PHit::App(i) => {
                         let a = &self.mix_apps[i];
-                        cv.text(self.f.small, &a.name, RECT { left: z.left + self.px(10), ..z }, if a.on { th().ink } else { th().dim }, DT_LEFT);
+                        let name = if a.name_code == "echowisp_music" { t("echowisp_music") } else { &a.name };
+                        cv.text(self.f.small, name, RECT { left: z.left + self.px(10), ..z }, if a.on { th().ink } else { th().dim }, DT_LEFT);
                     }
                     PHit::Vol(i) => {
                         let v = format!("{}", self.mix_apps[i].vol as i32);
                         cv.text(self.f.small, &v, RECT { left: z.right + self.px(6), right: z.right + self.px(40), top: z.top - self.px(6), bottom: z.bottom + self.px(6) }, th().dim, DT_CENTER);
                     }
-                    PHit::ShowBr => cv.text(self.f.small, "Puente a Discord", RECT { left: z.left + self.px(10), ..z }, th().ink, DT_LEFT),
-                    PHit::ShowDsc => cv.text(self.f.small, "Ventana de Discord", RECT { left: z.left + self.px(10), ..z }, th().ink, DT_LEFT),
+                    PHit::ShowBr => cv.text(self.f.small, t("discord_bridge"), RECT { left: z.left + self.px(10), ..z }, th().ink, DT_LEFT),
+                    PHit::ShowDsc => cv.text(self.f.small, t("discord_window"), RECT { left: z.left + self.px(10), ..z }, th().ink, DT_LEFT),
                     PHit::Token => {
-                        let t = if self.br_has_token { "Token guardado · pegar otro" } else { "Pegar token del bot (copialo y tocá)" };
-                        cv.text(self.f.small, t, z, th().ink, DT_CENTER);
+                        let label = if self.br_has_token { t("token_saved") } else { t("token_prompt") };
+                        cv.text(self.f.small, label, z, th().ink, DT_CENTER);
                     }
-                    PHit::Invite => cv.text(self.f.small, "Invitar el bot a un servidor", z, th().ink, DT_CENTER),
-                    PHit::Unlink => cv.text(self.f.small, "Desvincular bot", z, th().ink, DT_CENTER),
-                    PHit::Report => cv.text(self.f.small, "Reportar un problema", z, th().ink, DT_CENTER),
+                    PHit::Invite => cv.text(self.f.small, t("invite_server"), z, th().ink, DT_CENTER),
+                    PHit::Unlink => cv.text(self.f.small, t("unlink_bot"), z, th().ink, DT_CENTER),
+                    PHit::Report => cv.text(self.f.small, t("report_title"), z, th().ink, DT_CENTER),
                     PHit::Update => {
                         let v = env!("CARGO_PKG_VERSION");
                         let t = match &self.upd {
-                            update::State::Ready(i) => format!("Actualizar a {}", i.version),
-                            update::State::None => format!("Versión {v} · buscando novedades…"),
-                            update::State::Current => format!("Versión {v} · al día"),
-                            update::State::Unknown => format!("Versión {v} · sin conexión (reintentar)"),
-                            update::State::Busy(p, _) if *p >= 100 => "Instalando…".to_string(),
-                            update::State::Busy(p, _) => format!("Bajando… {p} %"),
-                            update::State::Error(e, _) => format!("{e} · reintentar"),
+                            update::State::Ready(i) => format!("{} {}", t("update_to"), i.version),
+                            update::State::None => format!("{} {v} · {}", t("version"), t("checking")),
+                            update::State::Current => format!("{} {v} · {}", t("version"), t("up_to_date")),
+                            update::State::Unknown => format!("{} {v} · {}", t("version"), t("retry_offline")),
+                            update::State::Busy(p, _) if *p >= 100 => t("installing").to_string(),
+                            update::State::Busy(p, _) => format!("{} {p} %", t("downloading")),
+                            update::State::Error(e, _) => format!("{e} · {}", t("retry")),
                         };
                         let ink = if matches!(self.upd, update::State::None | update::State::Current | update::State::Unknown) { th().dim } else { th().ink };
                         cv.text(self.f.small, &t, z, ink, DT_CENTER);
                     }
-                    PHit::Note(t) => cv.text_wrap(self.f.small, t, z, th().dim),
+                    PHit::Note(key) => cv.text_wrap(self.f.small, t(key), z, th().dim),
                     PHit::RStatus => cv.text_wrap(self.f.small, &self.rep.error, z, RED),
                     PHit::RText | PHit::RContact => {
                         let f = if hit == PHit::RText { report::Field::Text } else { report::Field::Contact };
                         let (val, hint) = if f == report::Field::Text {
-                            (&self.rep.text, "¿Qué pasó? ¿Qué estabas haciendo?")
+                            (&self.rep.text, t("report_hint"))
                         } else {
-                            (&self.rep.contact, "Tu mail, si querés respuesta")
+                            (&self.rep.contact, t("contact_hint"))
                         };
                         let pad = RECT { left: z.left + self.px(10), top: z.top + self.px(7), right: z.right - self.px(10), bottom: z.bottom - self.px(7) };
                         let focus = self.rep.focus == Some(f);
@@ -620,23 +629,24 @@ impl App {
                             }
                         }
                     }
-                    PHit::RAttach => cv.text(self.f.small, "Adjuntar datos técnicos", RECT { left: z.left + self.px(10), ..z }, th().ink, DT_LEFT),
+                    PHit::RAttach => cv.text(self.f.small, t("attach_technical"), RECT { left: z.left + self.px(10), ..z }, th().ink, DT_LEFT),
                     PHit::RSend => {
-                        let t = if self.rep.sending { "Enviando…" } else { "Enviar" };
-                        cv.text(self.f.small, t, z, if self.rep.ready() || self.rep.sending { th().ink } else { th().dim }, DT_CENTER);
+                        let label = if self.rep.sending { t("sending") } else { t("send") };
+                        cv.text(self.f.small, label, z, if self.rep.ready() || self.rep.sending { th().ink } else { th().dim }, DT_CENTER);
                     }
                     PHit::Browser(i) => cv.text(self.f.small, &self.browsers[i].0, inset, th().ink, DT_LEFT),
                     PHit::Hotkey(i) => {
                         let (id, name) = EDITABLE[i];
-                        cv.text(self.f.small, name, RECT { left: z.left + self.px(10), ..z }, th().ink, DT_LEFT);
+                        cv.text(self.f.small, t(name), RECT { left: z.left + self.px(10), ..z }, th().ink, DT_LEFT);
                         let combo = if self.panel_capture == Some(i) {
-                            "presioná la combinación…".to_string()
+                            t("press_shortcut").to_string()
                         } else {
                             self.hotkeys.iter().find(|h| h.0 == id).map(|h| key_name(h.1, h.2)).unwrap_or_default()
                         };
                         let c = if self.panel_capture == Some(i) { AMBER } else { th().dim };
                         cv.text(self.f.small, &combo, RECT { right: z.right - self.px(10), ..z }, c, DT_RIGHT);
                     }
+                    PHit::Language(lang) => cv.text(self.f.small, if lang == i18n::Lang::Es { t("spanish") } else { t("english") }, inset, th().ink, DT_LEFT),
                     _ => {}
                 }
             }
@@ -685,10 +695,34 @@ impl App {
                 } else {
                     self.show_dsc = !self.show_dsc;
                 }
-                let _ = std::fs::write(card_file(), json!({ "puente": self.show_br, "discord": self.show_dsc }).to_string());
+                save_card_prefs(self.show_br, self.show_dsc);
                 self.invalidate(); // la card cambia de alto; la de costado la sigue
             }
             PHit::Section(i) => self.sec_open[i] = !self.sec_open[i],
+            PHit::Language(lang) => {
+                let previous_br_error = self.br_err.clone();
+                let previous_mix_error = self.mix_err.clone();
+                let previous_flash = self.msg.clone();
+                i18n::set(lang);
+                save_card_prefs(self.show_br, self.show_dsc);
+                if self.ad { self.title = t("ad").into(); }
+                self.status = i18n::relocalize(&self.status);
+                self.msg = i18n::relocalize(&self.msg);
+                self.rep.error = i18n::relocalize(&self.rep.error);
+                if let Some(v) = &self.br_error_event {
+                    self.br_err = i18n::mix_error(v["code"].as_str().unwrap_or(""), "", v["pid"].as_u64().unwrap_or(0), v["msg"].as_str().unwrap_or("error"));
+                }
+                if let Some(v) = &self.mix_error_event {
+                    let message = i18n::mix_error(v["code"].as_str().unwrap_or(""), v["app"].as_str().unwrap_or(""), v["pid"].as_u64().unwrap_or(0), v["msg"].as_str().unwrap_or("error"));
+                    self.mix_err = format!("{}: {message}", t("mixer"));
+                }
+                if !previous_br_error.is_empty() && previous_flash.ends_with(&previous_br_error) {
+                    self.msg = format!("{}: {}", t("bridge"), self.br_err);
+                } else if !previous_mix_error.is_empty() && previous_flash == previous_mix_error {
+                    self.msg = self.mix_err.clone();
+                }
+                self.invalidate();
+            }
             PHit::Color(w) => {
                 if self.panel_edit.as_ref().is_some_and(|e| e.0 == w) {
                     self.panel_edit = None;
@@ -713,7 +747,7 @@ impl App {
             PHit::Token => self.br_paste_token(),
             PHit::Invite => {
                 self.mix_send(json!({ "cmd": "invite" }));
-                self.flash("Abriendo la invitación en el navegador");
+                self.flash(t("opening_invite"));
             }
             PHit::Unlink => self.br_unlink(),
             PHit::Browser(i) => {
@@ -722,9 +756,9 @@ impl App {
                 match file.map(|f| std::fs::write(f, p.display().to_string())) {
                     Some(Ok(())) => {
                         self.browser_cur = p;
-                        self.flash("Navegador cambiado: se usa al reabrir la card");
+                        self.flash(t("browser_changed"));
                     }
-                    _ => self.flash("No pude guardar el navegador"),
+                    _ => self.flash(t("browser_save_failed")),
                 }
             }
             PHit::Report => self.panel_open(Panel::Report),
@@ -775,7 +809,7 @@ impl App {
     fn report_send(&mut self) {
         if !self.rep.ready() {
             if !self.rep.sending {
-                self.rep.error = "Escribí qué pasó antes de enviar".into();
+                self.rep.error = t("report_empty").into();
             }
             return;
         }
@@ -793,7 +827,7 @@ impl App {
             if self.panel == Panel::Report {
                 self.panel_close();
             }
-            self.flash("Reporte enviado. ¡Gracias!");
+            self.flash(t("report_sent"));
         } else {
             self.rep.error = err;
         }
@@ -804,7 +838,7 @@ impl App {
     pub fn update_msg(&mut self, m: update::Msg) {
         match m {
             update::Msg::Available(i) => {
-                self.flash(&format!("Hay una versión nueva ({}): Configuración", i.version));
+                self.flash(&format!("{} ({}): {}", t("new_version"), i.version, t("settings")));
                 self.upd = update::State::Ready(i);
             }
             update::Msg::UpToDate => self.upd = update::State::Current,
@@ -854,7 +888,7 @@ impl App {
             mods |= MOD_SHIFT;
         }
         if mods & (MOD_CONTROL | MOD_ALT) == 0 {
-            self.flash("Usá Ctrl o Alt en la combinación");
+            self.flash(t("shortcut_mod"));
             return true;
         }
         let id = EDITABLE[i].0;
@@ -864,7 +898,7 @@ impl App {
             UnregisterHotKey(self.hwnd, id);
             if RegisterHotKey(self.hwnd, id, mods | MOD_NOREPEAT, vk as u32) == 0 {
                 RegisterHotKey(self.hwnd, id, old.1 | MOD_NOREPEAT, old.2);
-                self.flash("Esa combinación la usa otra app");
+                self.flash(t("shortcut_taken"));
             } else {
                 self.hotkeys[k] = (id, mods, vk as u32);
                 let saved: serde_json::Map<String, Value> = self.hotkeys.iter().map(|h| (h.0.to_string(), json!([h.1, h.2]))).collect();
@@ -959,5 +993,5 @@ pub unsafe fn create(owner: HWND, hinst: HINSTANCE) -> HWND {
     let cls = wide("echowisp-panel");
     let wc = WNDCLASSW { lpfnWndProc: Some(panel_proc), hInstance: hinst, hCursor: LoadCursorW(null_mut(), IDC_ARROW), lpszClassName: cls.as_ptr(), ..zeroed() };
     RegisterClassW(&wc);
-    CreateWindowExW(WS_EX_LAYERED | WS_EX_TOPMOST | WS_EX_TOOLWINDOW, cls.as_ptr(), wide("YTM panel").as_ptr(), WS_POPUP, 0, 0, 1, 1, owner, null_mut(), hinst, null())
+    CreateWindowExW(WS_EX_LAYERED | WS_EX_TOPMOST | WS_EX_TOOLWINDOW, cls.as_ptr(), wide("Echowisp panel").as_ptr(), WS_POPUP, 0, 0, 1, 1, owner, null_mut(), hinst, null())
 }

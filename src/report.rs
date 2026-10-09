@@ -129,9 +129,9 @@ pub fn send(hwnd: isize, body: Value) {
         let r = unsafe { post(&body.to_string()) };
         let (ok, msg) = match r {
             Ok(200) => (1, String::new()),
-            Ok(429) => (0, "Mandaste varios seguidos: probá en un rato".to_string()),
-            Ok(s) => (0, format!("El servidor respondió {s}: probá más tarde")),
-            Err(()) => (0, "Sin conexión: revisá internet y probá de nuevo".to_string()),
+            Ok(429) => (0, crate::i18n::t("report_rate").to_string()),
+            Ok(s) => (0, format!("{} {s}: {}", crate::i18n::t("server_replied"), crate::i18n::t("try_later"))),
+            Err(()) => (0, crate::i18n::t("offline").to_string()),
         };
         let p = Box::into_raw(Box::new(msg));
         if unsafe { PostMessageW(hwnd as _, WM_REPORT, ok, p as isize) } == 0 {

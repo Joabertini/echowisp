@@ -91,11 +91,11 @@ pub fn install(hwnd: isize, info: Info, browser: PathBuf) {
             Err(e) => return post(hwnd, Msg::Failed(e)),
         };
         if sha256_hex(&data).as_deref() != Some(info.sha256.as_str()) {
-            return post(hwnd, Msg::Failed("La descarga llegó dañada: probá de nuevo".into()));
+            return post(hwnd, Msg::Failed(crate::i18n::t("download_corrupt").into()));
         }
         let setup = std::env::temp_dir().join(format!("echowisp-setup-{}.exe", info.version));
         if std::fs::write(&setup, &data).is_err() {
-            return post(hwnd, Msg::Failed("No pude guardar el instalador".into()));
+            return post(hwnd, Msg::Failed(crate::i18n::t("installer_save_failed").into()));
         }
         // La card tiene que cerrarse antes de que el instalador arranque (AppMutex): cmd espera ~2 s.
         let cmd = format!(
@@ -105,7 +105,7 @@ pub fn install(hwnd: isize, info: Info, browser: PathBuf) {
         );
         match std::process::Command::new("cmd.exe").raw_arg(cmd).creation_flags(CREATE_NO_WINDOW).spawn() {
             Ok(_) => post(hwnd, Msg::Launched),
-            Err(e) => post(hwnd, Msg::Failed(format!("No pude abrir el instalador: {e}"))),
+            Err(e) => post(hwnd, Msg::Failed(format!("{}{e}", crate::i18n::t("installer_open_failed")))),
         }
     });
 }
@@ -126,9 +126,9 @@ unsafe fn get(url: &str, progress: &mut dyn FnMut(usize, usize)) -> Result<Vec<u
             }
         }
     }
-    const OFFLINE: &str = "Sin conexión: revisá internet y probá de nuevo";
-    let ok = |h: *mut core::ffi::c_void| if h.is_null() { Err(OFFLINE.to_string()) } else { Ok(H(h)) };
-    let rest = url.strip_prefix("https://").ok_or("URL inválida")?;
+    let offline = crate::i18n::t("offline");
+    let ok = |h: *mut core::ffi::c_void| if h.is_null() { Err(offline.to_string()) } else { Ok(H(h)) };
+    let rest = url.strip_prefix("https://").ok_or(crate::i18n::t("invalid_url"))?;
     let (host, path) = rest.split_once('/').map(|(h, p)| (h, format!("/{p}"))).unwrap_or((rest, "/".into()));
     let agent = wide(concat!("echowisp/", env!("CARGO_PKG_VERSION")));
     let ses = ok(WinHttpOpen(agent.as_ptr(), WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY, null(), null(), 0))?;
@@ -136,7 +136,7 @@ unsafe fn get(url: &str, progress: &mut dyn FnMut(usize, usize)) -> Result<Vec<u
     let con = ok(WinHttpConnect(ses.0, wide(host).as_ptr(), INTERNET_DEFAULT_HTTPS_PORT, 0))?;
     let req = ok(WinHttpOpenRequest(con.0, wide("GET").as_ptr(), wide(&path).as_ptr(), null(), null(), null(), WINHTTP_FLAG_SECURE))?;
     if WinHttpSendRequest(req.0, null(), 0, null(), 0, 0, 0) == 0 || WinHttpReceiveResponse(req.0, null_mut()) == 0 {
-        return Err(OFFLINE.into());
+        return Err(offline.into());
     }
     let num = |q: u32| {
         let mut v = 0u32;
@@ -146,7 +146,7 @@ unsafe fn get(url: &str, progress: &mut dyn FnMut(usize, usize)) -> Result<Vec<u
     };
     let status = num(WINHTTP_QUERY_STATUS_CODE);
     if status != 200 {
-        return Err(format!("El servidor respondió {status}: probá más tarde"));
+        return Err(format!("{} {status}: {}", crate::i18n::t("server_replied"), crate::i18n::t("try_later")));
     }
     let total = num(WINHTTP_QUERY_CONTENT_LENGTH) as usize;
     let mut out = Vec::with_capacity(total);
@@ -154,7 +154,7 @@ unsafe fn get(url: &str, progress: &mut dyn FnMut(usize, usize)) -> Result<Vec<u
     loop {
         let mut n = 0u32;
         if WinHttpReadData(req.0, buf.as_mut_ptr().cast(), buf.len() as u32, &mut n) == 0 {
-            return Err(OFFLINE.into());
+            return Err(offline.into());
         }
         if n == 0 {
             break;
