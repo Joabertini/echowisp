@@ -6,6 +6,7 @@ on:
   workflow_dispatch:
   push:
     tags: ["v*"]
+    branches: ["ci/release"] # PRUEBA: sacar antes del merge
 
 permissions:
   contents: read
