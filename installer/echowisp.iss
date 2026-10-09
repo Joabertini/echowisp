@@ -46,6 +46,8 @@ Name: "inicio"; Description: "Abrir con Windows"; Flags: unchecked
 Source: "..\target\release\echowisp.exe"; DestDir: "{app}"; Flags: ignoreversion; Components: musica
 Source: "discord.module"; DestDir: "{app}"; Components: discord
 Source: "..\bridge\target\release\echowisp-bridge.exe"; DestDir: "{app}"; Flags: ignoreversion; Components: puente
+Source: "..\LICENSE"; DestDir: "{app}"; Flags: ignoreversion
+Source: "..\THIRD-PARTY-NOTICES.txt"; DestDir: "{app}"; Flags: ignoreversion
 
 [InstallDelete]
 ; Al reinstalar sin un modulo, se saca lo que habia quedado.

@@ -114,3 +114,6 @@ Funciona con el Brave del usuario cerrado. Prioridad: recursos mínimos y fluide
   usa la que exista. Instalador: mismo AppId, `UsePreviousAppDir=no`, borra `Programs\ytm-float` y accesos viejos;
   AppMutex con los dos nombres.
 - **Al publicar: actualizar `/echowisp/version.json` y `/ytm-float/version.json`** (las 0.4.x leen el viejo).
+- **Avisos de terceros:** antes de publicar correr `scripts/notices.ps1`; genera
+  `THIRD-PARTY-NOTICES.txt` desde el árbol normal de dependencias para Windows x64 y el instalador
+  distribuye ese archivo junto con `LICENSE`.
