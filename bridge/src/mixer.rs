@@ -178,7 +178,12 @@ fn apps(en: &IMMDeviceEnumerator) -> Vec<App> {
 #[derive(Clone)]
 struct Saved { pid: u32, exe: String, original: f32 }
 #[derive(Default)]
-struct Persist { ducked: HashMap<String, Saved>, legacy: HashMap<String, String> }
+struct Persist {
+    ducked: HashMap<String, Saved>,
+    legacy: HashMap<String, String>,
+    #[cfg(test)]
+    save_error: Option<String>,
+}
 
 impl Persist {
     fn load() -> Self {
@@ -201,6 +206,8 @@ impl Persist {
         p
     }
     fn save(&self) -> Result<(), String> {
+        #[cfg(test)]
+        if let Some(e) = &self.save_error { return Err(e.clone()); }
         let path = data_path();
         std::fs::create_dir_all(path.parent().unwrap()).map_err(|e| e.to_string())?;
         let ducked: serde_json::Map<String, Value> = self.ducked.iter().map(|(id, x)| (id.clone(), json!({ "pid": x.pid, "exe": x.exe, "original": x.original }))).collect();
@@ -250,7 +257,11 @@ fn duck_volume(p: &mut Persist, id: &str, pid: u32, exe: &str, name: &str, vol: 
     } // write-ahead: un cierre forzado podrá restaurar
     if let Err(e) = vol.set(DUCK) {
         p.ducked.remove(id);
-        if persist { let _ = p.save(); }
+        if persist {
+            if let Err(save) = p.save() {
+                return Err(format!("no pude bajar el volumen de {name}: {e}; no pude actualizar ruteo.json: {save}"));
+            }
+        }
         return Err(format!("no pude bajar el volumen de {name}: {e}"));
     }
     Ok(())
@@ -275,9 +286,24 @@ struct Mixer {
     active: bool,
     last_scan: Instant,
     last_list: String,
+    save_error_visible: bool,
 }
 
 impl Mixer {
+    /// El error se muestra una vez hasta que un guardado posterior vuelva a funcionar.
+    fn save_routing(&mut self) -> bool {
+        match self.saved.save() {
+            Ok(()) => { self.save_error_visible = false; true }
+            Err(e) => {
+                if !self.save_error_visible {
+                    emit(json!({ "ev": "mix_error", "msg": format!("no pude guardar ruteo.json: {e}") }));
+                    self.save_error_visible = true;
+                }
+                false
+            }
+        }
+    }
+
     fn subscribe(&mut self, pid: u32, session: &Session) -> Result<(), String> {
         if self.subscriptions.contains_key(&session.id) { return Ok(()); }
         let sink: IAudioSessionEvents = SessionEvents { id: session.id.clone(), external: self.external_tx.clone() }.into();
@@ -303,7 +329,7 @@ impl Mixer {
                 }
             }
         }
-        let _ = self.saved.save();
+        self.save_routing();
     }
 
     /// Emite la lista solo si cambió (o si la card la pide con `force`).
@@ -330,7 +356,7 @@ impl Mixer {
             if let Err(e) = self.subscribe(pid, s).and_then(|_| duck_session(&mut self.saved, app, s)) {
                 for done in &app.sessions { restore_session(&mut self.saved, done); }
                 self.subscriptions.retain(|_, subscription| subscription.pid != pid);
-                let _ = self.saved.save();
+                self.save_routing();
                 return Err(e);
             }
         }
@@ -355,7 +381,7 @@ impl Mixer {
                 restore_session(&mut self.saved, sess);
             }
         }
-        let _ = self.saved.save();
+        self.save_routing();
     }
 
     fn active(&mut self, on: bool) -> Result<(), String> {
@@ -462,7 +488,7 @@ impl Mixer {
                                 self.saved.ducked.remove(&session.id);
                             }
                         }
-                        let _ = self.saved.save();
+                        self.save_routing();
                         self.stop_one(pid); self.selected.remove(&pid);
                         emit(json!({ "ev": "mix_error", "msg": format!("{} cambió volumen en Windows; se detuvo el envío", app.name) }));
                         continue;
@@ -518,7 +544,7 @@ pub fn start(audio: Arc<audio_mix::Shared>) -> (mpsc::Sender<Command>, std::thre
         };
         let mut mixer = Mixer { en, saved: Persist::load(), selected: HashMap::new(),
             subscriptions: HashMap::new(), external_tx, external_rx, external_changes: HashSet::new(),
-            audio, active: false, last_scan: Instant::now(), last_list: String::new() };
+            audio, active: false, last_scan: Instant::now(), last_list: String::new(), save_error_visible: false };
         mixer.recover(&apps(&mixer.en));
         mixer.list();
         loop {
@@ -545,7 +571,7 @@ pub fn start(audio: Arc<audio_mix::Shared>) -> (mpsc::Sender<Command>, std::thre
             mixer.tick();
         }
         let _ = mixer.active(false);
-        let _ = mixer.saved.save();
+        mixer.save_routing();
         CoUninitialize();
     });
     (tx, thread)
@@ -600,6 +626,18 @@ mod tests {
         let failed = Fake { value: Cell::new(0.7), muted: false, fails: Cell::new(true) };
         assert!(duck_volume(&mut p, "f", 7, "app.exe", "app", &failed, false).is_err());
         assert!(p.ducked.is_empty());
+    }
+    #[test]
+    fn failed_journal_save_reports_and_does_not_duck_or_drop_pending_record() {
+        let mut p = Persist::default();
+        p.ducked.insert("pending".into(), Saved { pid: 8, exe: "other.exe".into(), original: 0.6 });
+        p.save_error = Some("disco lleno".into());
+        let volume = Fake { value: Cell::new(0.7), muted: false, fails: Cell::new(false) };
+        let error = duck_volume(&mut p, "session-1", 7, "app.exe", "app", &volume, true).unwrap_err();
+        assert!(error.contains("disco lleno"));
+        assert_eq!(volume.value.get(), 0.7);
+        assert!(p.ducked.contains_key("pending"));
+        assert!(!p.ducked.contains_key("session-1"));
     }
     #[test]
     fn failed_restore_remains_pending_for_recovery() {
