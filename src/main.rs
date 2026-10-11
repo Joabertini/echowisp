@@ -8,6 +8,7 @@ mod cdp;
 mod engine;
 mod glow;
 mod i18n;
+mod meter;
 mod panel;
 mod report;
 mod skin;
@@ -475,6 +476,11 @@ struct App {
     t0: Instant, // origen del reloj de las animaciones
     anim_timer: bool,
     breath_timer: bool,
+    breath_ms: u32, // intervalo del timer del LED: 66 ms respirando, 50 ms con vumetro
+    meter: Option<meter::Meter>,
+    meter_tried: bool,
+    peak: f32,
+    vu_root: (u32, Instant), // pid de Brave (brave.pid), releido cada 5 s
     base: Vec<u32>, // lienzo antes de terminar, para repintar solo el LED
     prev_title: String, // titulo que se desvanece al cambiar de cancion
     canvas: Option<Canvas>,
@@ -621,15 +627,47 @@ impl App {
     /// Prende o apaga el timer del LED que respira segun haga falta.
     fn breath_sync(&mut self) {
         let want = self.motion() && self.ready && !self.paused && !self.title.is_empty() && !self.ad;
-        if want != self.breath_timer {
+        let ms = if th().audio { 50 } else { 66 };
+        if want != self.breath_timer || (want && ms != self.breath_ms) {
             self.breath_timer = want;
+            self.breath_ms = if want { ms } else { 0 };
             unsafe {
                 if want {
-                    SetTimer(self.hwnd, T_BREATH, 66, None);
+                    SetTimer(self.hwnd, T_BREATH, ms, None);
                 } else {
                     KillTimer(self.hwnd, T_BREATH);
                 }
             }
+        }
+    }
+
+    /// Con el vumetro prendido: pico de audio de Brave (0..1). Sin medidor de Windows, None (respira el LED).
+    fn vu_peak(&mut self) -> Option<f32> {
+        if !th().audio {
+            return None;
+        }
+        if self.meter.is_none() && !self.meter_tried {
+            self.meter_tried = true;
+            self.meter = meter::Meter::new();
+        }
+        if self.vu_root.1.elapsed().as_secs() >= 5 {
+            let pid = std::fs::read_to_string(brave::data_dir().join("brave.pid")).ok().and_then(|s| s.trim().parse().ok()).unwrap_or(0);
+            self.vu_root = (pid, Instant::now());
+        }
+        let root = self.vu_root.0;
+        let m = self.meter.as_mut()?;
+        Some(if root == 0 { 0.0 } else { m.peak(root) })
+    }
+
+    /// LED de estado o, con la reaccion al audio, vumetro de 6 segmentos en el mismo lugar.
+    fn status_light(&self, cv: &mut Canvas, g: &mut glow::Cache, on: f32, c: u32) {
+        let s = self.scale;
+        let (cx, cy) = (self.pf(LED_X), self.pf(LED_Y));
+        if th().audio && self.breath_timer && self.meter.is_some() {
+            let lit = self.peak.clamp(0.0, 1.0).sqrt() * 6.0;
+            skin::segments(cv, th(), g, s, cx - 11.0 * s, cy - 2.5 * s, cx + 11.0 * s, cy + 2.5 * s, 6, lit, th().accent, 1.0);
+        } else {
+            skin::led(cv, th(), g, s, cx, cy, 7.0 * s, on, c);
         }
     }
 
@@ -642,13 +680,17 @@ impl App {
             return;
         }
         let s = self.scale;
-        let (cx, cy, size) = (self.pf(LED_X), self.pf(LED_Y), 7.0 * s);
+        if let Some(p) = self.vu_peak() {
+            self.peak = p;
+        }
+        let (cx, cy) = (self.pf(LED_X), self.pf(LED_Y));
+        let (hw, hh) = (11.0 * s, 3.5 * s); // abarca el LED y el vumetro
         let pad = (6.0 * s).round() as i32 + 2;
-        let (x0, y0) = ((cx - size / 2.0) as i32 - pad, (cy - size / 2.0) as i32 - pad);
-        let (x1, y1) = ((cx + size / 2.0) as i32 + pad + 1, (cy + size / 2.0) as i32 + pad + 1);
+        let (x0, y0) = ((cx - hw) as i32 - pad, (cy - hh) as i32 - pad);
+        let (x1, y1) = ((cx + hw) as i32 + pad + 1, (cy + hh) as i32 + pad + 1);
         cv.restore(&self.base, x0, y0, x1, y1);
         let mut g = std::mem::take(&mut self.glows);
-        skin::led(&mut cv, th(), &mut g, s, cx, cy, size, anim::breath(self.now_ms()), th().accent);
+        self.status_light(&mut cv, &mut g, anim::breath(self.now_ms()), th().accent);
         self.glows = g;
         cv.finish_rect(RADIUS * s, x0, y0, x1, y1);
         unsafe { self.present_dirty(&cv, RECT { left: x0.max(0), top: y0.max(0), right: x1.min(cv.w), bottom: y1.min(cv.h) }) };
@@ -1405,7 +1447,7 @@ impl App {
             let (on, c) = if dot == GREEN { (1.0, tm.accent) } else if dot == tm.dim3 { (0.0, tm.accent) } else { (1.0, dot) };
             let on = if dot == GREEN && self.breath_timer { anim::breath(self.now_ms()) } else { on };
             let on = if self.boot_v() > 0.05 { on } else { 0.0 };
-            skin::led(&mut cv, tm, &mut g, s, self.pf(LED_X), self.pf(LED_Y), 7.0 * s, on, c);
+            self.status_light(&mut cv, &mut g, on, c);
         }
 
         // Botones redondos del encabezado (hover; el engranaje se resalta mientras su card esta afuera).
@@ -2180,6 +2222,11 @@ fn main() {
             t0: Instant::now(),
             anim_timer: false,
             breath_timer: false,
+            breath_ms: 0,
+            meter: None,
+            meter_tried: false,
+            peak: 0.0,
+            vu_root: (0, Instant::now() - std::time::Duration::from_secs(60)),
             base: Vec::new(),
             prev_title: String::new(),
             canvas: None,
