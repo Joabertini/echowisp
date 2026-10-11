@@ -23,6 +23,7 @@ pub enum Ev {
     State(Value),
     Reply(u32, Value),
     Status(String),
+    Asleep, // el hilo de sesion termino: YouTube Music en reposo
 }
 
 /// Al arrancar: el log de la sesion anterior pasa a engine.prev.log (se pisa el previo).
@@ -52,11 +53,32 @@ pub struct Engine {
     // Reciclado horario (page.js): que retomar al reabrir ({url, t, paused}) y si la card sigue sin avisos.
     pending: Mutex<Option<Value>>,
     quiet: AtomicBool,
+    // YouTube Music a pedido: el hilo de sesion solo corre si alguien lo desperto (`wake`).
+    running: AtomicBool,
+    // Arranque diferido: las acciones esperan al primer estado de la pagina en vez de fallar.
+    deferred: AtomicBool,
+    queued: Mutex<Vec<(String, Value, u32)>>,
+}
+
+/// Lo que no despierta al motor: sin musica no hay volumen ni posicion que cambiar.
+fn wakes(cmd: &str) -> bool {
+    !matches!(cmd, "volume" | "seek")
+}
+
+/// Cola de acciones mientras arranca: las ultimas 8 bastan (busquedas y clics del usuario).
+const QUEUE_MAX: usize = 8;
+
+fn enqueue<T>(q: &mut Vec<T>, item: T) {
+    if q.len() == QUEUE_MAX {
+        q.remove(0);
+    }
+    q.push(item);
 }
 
 const YTM: &str = "https://music.youtube.com";
 
-pub fn start(hwnd: isize) -> Arc<Engine> {
+/// `now`: arrancar Brave ya (configuracion por defecto) o quedar en reposo hasta la primera accion.
+pub fn start(hwnd: isize, now: bool) -> Arc<Engine> {
     let e = Arc::new(Engine {
         hwnd,
         ws: Mutex::new(None),
@@ -68,9 +90,15 @@ pub fn start(hwnd: isize) -> Arc<Engine> {
         exiting: AtomicBool::new(false),
         pending: Mutex::new(None),
         quiet: AtomicBool::new(false),
+        running: AtomicBool::new(false),
+        deferred: AtomicBool::new(false),
+        queued: Mutex::new(Vec::new()),
     });
-    let e2 = e.clone();
-    thread::spawn(move || e2.run());
+    if now {
+        e.wake("inicio");
+    } else {
+        log("motor diferido");
+    }
     e
 }
 
@@ -93,8 +121,61 @@ impl Engine {
         self.send(self.next.fetch_add(1, SeqCst), method, params);
     }
 
+    /// Arranca el hilo de sesion si estaba en reposo. Devuelve si lo arranco.
+    pub fn wake(self: &Arc<Self>, why: &str) -> bool {
+        if self.running.swap(true, SeqCst) {
+            return false;
+        }
+        self.exiting.store(false, SeqCst);
+        if why != "inicio" {
+            self.deferred.store(true, SeqCst);
+        }
+        log(&format!("motor iniciado por {why}"));
+        let e = self.clone();
+        thread::spawn(move || {
+            e.clone().run();
+            e.running.store(false, SeqCst);
+            e.post(Ev::Asleep);
+        });
+        true
+    }
+
+    /// Brave corriendo (o arrancando).
+    pub fn awake(&self) -> bool {
+        self.running.load(SeqCst)
+    }
+
+    /// Cierra Brave como al salir y vuelve al reposo.
+    pub fn stop(&self) {
+        if !self.awake() {
+            return;
+        }
+        log("motor cerrado a pedido");
+        self.queued.lock().unwrap().clear();
+        self.shutdown();
+    }
+
     /// Ejecuta window.__ytm(cmd, arg) en la pagina; la respuesta vuelve como Ev::Reply(tag, ..).
-    pub fn call(&self, cmd: &str, arg: Value, tag: u32) {
+    /// En reposo, la accion despierta al motor y se ejecuta cuando la pagina esta lista.
+    pub fn call(self: &Arc<Self>, cmd: &str, arg: Value, tag: u32) {
+        if !self.awake() {
+            if !wakes(cmd) {
+                return;
+            }
+            self.wake(cmd);
+        }
+        {
+            // Mismo lock que el vaciado: o entra en la cola, o la pagina ya esta lista.
+            let mut q = self.queued.lock().unwrap();
+            if self.deferred.load(SeqCst) {
+                enqueue(&mut q, (cmd.into(), arg, tag));
+                return;
+            }
+        }
+        self.exec(cmd, arg, tag);
+    }
+
+    fn exec(&self, cmd: &str, arg: Value, tag: u32) {
         let ctx = self.ctx.load(SeqCst);
         if ctx == 0 {
             self.post(Ev::Reply(tag, json!({ "ok": false, "error": crate::i18n::t("still_loading") })));
@@ -108,8 +189,9 @@ impl Engine {
         }));
     }
 
-    pub fn login(&self) {
+    pub fn login(self: &Arc<Self>) {
         self.login.store(true, SeqCst);
+        self.wake("login");
         if let Some(p) = self.proc_.lock().unwrap().take() {
             p.kill();
             p.wait(3000);
@@ -149,7 +231,9 @@ impl Engine {
             let recycling = match self.session(&exe) {
                 Err(e) if e.kind() == io::ErrorKind::Interrupted => true,
                 Err(e) => {
-                    log(&format!("sesión: {e}"));
+                    if !self.exiting.load(SeqCst) {
+                        log(&format!("sesión: {e}"));
+                    }
                     self.quiet.store(false, SeqCst);
                     if !self.exiting.load(SeqCst) && !self.login.load(SeqCst) {
                         self.post(Ev::Status(format!("{} ({})", crate::i18n::t("reconnecting"), crate::i18n::runtime_error(&e.to_string()))));
@@ -230,7 +314,24 @@ impl Engine {
                                 return Err(io::Error::new(io::ErrorKind::Interrupted, "reciclado"));
                             }
                             self.quiet.store(false, SeqCst);
+                            let api = s["api"] == true;
                             self.post(Ev::State(s));
+                            // Arranque diferido: la cola sale cuando la API interna de la pagina esta lista
+                            // (antes, una busqueda vuelve HTTP 400).
+                            if !api {
+                                continue;
+                            }
+                            let q = {
+                                let mut q = self.queued.lock().unwrap();
+                                self.deferred.store(false, SeqCst);
+                                std::mem::take(&mut *q)
+                            };
+                            if !q.is_empty() {
+                                log(&format!("motor listo: {} acciones en cola", q.len()));
+                                for (cmd, arg, tag) in q {
+                                    self.exec(&cmd, arg, tag);
+                                }
+                            }
                         }
                     }
                     "Inspector.targetCrashed" => return Err(io::Error::other("pestaña caída")),
@@ -251,5 +352,27 @@ impl Engine {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn volume_and_seek_do_not_wake() {
+        assert!(!wakes("volume") && !wakes("seek"));
+        for c in ["play", "toggle", "next", "prev", "search", "home", "playlists", "mute"] {
+            assert!(wakes(c), "{c}");
+        }
+    }
+
+    #[test]
+    fn queue_keeps_last_actions() {
+        let mut q = Vec::new();
+        for i in 0..12 {
+            enqueue(&mut q, i);
+        }
+        assert_eq!(q, (4..12).collect::<Vec<_>>());
     }
 }

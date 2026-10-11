@@ -32,6 +32,8 @@ pub enum PHit {
     Sw(usize),
     Vol(usize),
     ShowBr,
+    YtmStart,
+    YtmStop,
     Invite,
     Unlink,
     ShowDsc,
@@ -98,14 +100,19 @@ fn card_file() -> std::path::PathBuf {
     brave::data_dir().join("card.json")
 }
 
-fn save_card_prefs(show_br: bool, show_dsc: bool) {
+fn save_card_prefs(show_br: bool, show_dsc: bool, ytm_start: bool) {
     let language = if i18n::current() == i18n::Lang::Es { "es" } else { "en" };
-    let _ = std::fs::write(card_file(), json!({ "puente": show_br, "discord": show_dsc, "idioma": language }).to_string());
+    let v = json!({ "puente": show_br, "discord": show_dsc, "idioma": language, "ytm_inicio": ytm_start });
+    let _ = std::fs::write(card_file(), v.to_string());
 }
 
-/// Fila opcional a la vista en la card ("puente" | "discord"). Por defecto si.
+/// Fila opcional a la vista en la card ("puente" | "discord") o YouTube Music al abrir ("ytm_inicio"). Por defecto si.
 pub fn card_pref(k: &str) -> bool {
-    std::fs::read_to_string(card_file()).ok().and_then(|s| serde_json::from_str::<Value>(&s).ok()).and_then(|v| v[k].as_bool()).unwrap_or(true)
+    pref_from(std::fs::read_to_string(card_file()).ok().as_deref(), k)
+}
+
+fn pref_from(raw: Option<&str>, k: &str) -> bool {
+    raw.and_then(|s| serde_json::from_str::<Value>(s).ok()).and_then(|v| v[k].as_bool()).unwrap_or(true)
 }
 
 fn hotkeys_file() -> std::path::PathBuf {
@@ -163,6 +170,13 @@ impl App {
                 let open = |i: usize| self.sec_open[i];
                 head(0, &mut y, &mut v);
                 if open(0) {
+                    row(PHit::YtmStart, 12, PW - 12, y, y + P_ROW, &mut v);
+                    y += P_ROW;
+                    // Con YouTube Music a pedido y Brave abierto: se puede volver al reposo.
+                    if !self.ytm_start && self.eng.awake() {
+                        row(PHit::YtmStop, 12, PW - 12, y + 2, y + 32, &mut v);
+                        y += 36;
+                    }
                     for (h, ok) in [(PHit::ShowBr, self.br.is_some()), (PHit::ShowDsc, self.dsc_avail)] {
                         if ok {
                             row(h, 12, PW - 12, y, y + P_ROW, &mut v);
@@ -494,7 +508,7 @@ impl App {
                         };
                         if let Some(c) = c { cv.round(l, t, rr, b, self.pf(10.0), c); }
                     }
-                    PHit::Token | PHit::Invite | PHit::Unlink | PHit::Report => cv.round(l, t, rr, b, self.pf(10.0), if hov == hit { th().accent } else { th().tab }),
+                    PHit::Token | PHit::Invite | PHit::Unlink | PHit::Report | PHit::YtmStop => cv.round(l, t, rr, b, self.pf(10.0), if hov == hit { th().accent } else { th().tab }),
                     PHit::RText | PHit::RContact => {
                         let f = if hit == PHit::RText { report::Field::Text } else { report::Field::Contact };
                         let focus = self.rep.focus == Some(f);
@@ -515,11 +529,15 @@ impl App {
                         let c = if !self.rep.ready() { th().hover } else if hov == hit { th().accent } else { th().tab };
                         cv.round(l, t, rr, b, self.pf(10.0), c);
                     }
-                    PHit::ShowBr | PHit::ShowDsc => {
+                    PHit::ShowBr | PHit::ShowDsc | PHit::YtmStart => {
                         if hov == hit {
                             cv.round(l, t, rr, b, self.pf(8.0), th().hover);
                         }
-                        let on = if hit == PHit::ShowBr { self.show_br } else { self.show_dsc };
+                        let on = match hit {
+                            PHit::ShowBr => self.show_br,
+                            PHit::ShowDsc => self.show_dsc,
+                            _ => self.ytm_start,
+                        };
                         let (sl, st, sr, sb) = (rr - self.pf(42.0), t + self.pf(5.0), rr - self.pf(4.0), b - self.pf(5.0));
                         cv.round(sl, st, sr, sb, (sb - st) / 2.0, if on { GREEN } else { th().hover });
                         let k = (sb - st) / 2.0 - self.pf(2.5);
@@ -584,6 +602,8 @@ impl App {
                         let v = format!("{}", self.mix_apps[i].vol as i32);
                         cv.text(self.f.small, &v, RECT { left: z.right + self.px(6), right: z.right + self.px(40), top: z.top - self.px(6), bottom: z.bottom + self.px(6) }, th().dim, DT_CENTER);
                     }
+                    PHit::YtmStart => cv.text(self.f.small, t("ytm_on_open"), RECT { left: z.left + self.px(10), ..z }, th().ink, DT_LEFT),
+                    PHit::YtmStop => cv.text(self.f.small, t("ytm_close"), z, th().ink, DT_CENTER),
                     PHit::ShowBr => cv.text(self.f.small, t("discord_bridge"), RECT { left: z.left + self.px(10), ..z }, th().ink, DT_LEFT),
                     PHit::ShowDsc => cv.text(self.f.small, t("discord_window"), RECT { left: z.left + self.px(10), ..z }, th().ink, DT_LEFT),
                     PHit::Token => {
@@ -695,16 +715,21 @@ impl App {
                 } else {
                     self.show_dsc = !self.show_dsc;
                 }
-                save_card_prefs(self.show_br, self.show_dsc);
+                save_card_prefs(self.show_br, self.show_dsc, self.ytm_start);
                 self.invalidate(); // la card cambia de alto; la de costado la sigue
             }
+            PHit::YtmStart => {
+                self.ytm_start = !self.ytm_start;
+                save_card_prefs(self.show_br, self.show_dsc, self.ytm_start);
+            }
+            PHit::YtmStop => self.eng.stop(), // la card se limpia con Ev::Asleep
             PHit::Section(i) => self.sec_open[i] = !self.sec_open[i],
             PHit::Language(lang) => {
                 let previous_br_error = self.br_err.clone();
                 let previous_mix_error = self.mix_err.clone();
                 let previous_flash = self.msg.clone();
                 i18n::set(lang);
-                save_card_prefs(self.show_br, self.show_dsc);
+                save_card_prefs(self.show_br, self.show_dsc, self.ytm_start);
                 if self.ad { self.title = t("ad").into(); }
                 self.status = i18n::relocalize(&self.status);
                 self.msg = i18n::relocalize(&self.msg);
@@ -994,4 +1019,17 @@ pub unsafe fn create(owner: HWND, hinst: HINSTANCE) -> HWND {
     let wc = WNDCLASSW { lpfnWndProc: Some(panel_proc), hInstance: hinst, hCursor: LoadCursorW(null_mut(), IDC_ARROW), lpszClassName: cls.as_ptr(), ..zeroed() };
     RegisterClassW(&wc);
     CreateWindowExW(WS_EX_LAYERED | WS_EX_TOPMOST | WS_EX_TOOLWINDOW, cls.as_ptr(), wide("Echowisp panel").as_ptr(), WS_POPUP, 0, 0, 1, 1, owner, null_mut(), hinst, null())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ytm_on_open_defaults_on() {
+        assert!(pref_from(None, "ytm_inicio"));
+        assert!(pref_from(Some("no json"), "ytm_inicio"));
+        assert!(pref_from(Some(r#"{"puente":false}"#), "ytm_inicio"));
+        assert!(!pref_from(Some(r#"{"ytm_inicio":false}"#), "ytm_inicio"));
+    }
 }
