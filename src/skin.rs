@@ -19,27 +19,26 @@ pub fn card(cv: &mut Canvas, t: &Theme, w: f32, h: f32, rad: f32) {
         cv.round(1.0, 1.0, w - 1.0, h - 1.0, rad - 1.0, t.bg);
         return;
     }
-    let fatuo = t.style == Style::Fatuo;
     let s = rad / super::RADIUS;
     let glow = (t.glow_a / 0.7).min(1.0); // 1.0 en oscuros, menos en claros
     let mut line = t.accent;
     match t.style {
         Style::Fatuo => {
-            // Borde teñido por la luz, fondo que arriba tira al acento, luz detras del play y motas sueltas.
+            // Borde teñido por la luz, fondo que arriba tira al acento, motas sueltas y un glow que recorre
+            // todo el perimetro (en vez de una luz fija detras del play, que no tiene sentido en el panel).
             cv.round(0.0, 0.0, w, h, rad, theme::mix(t.hairline, t.accent, 0.3));
             cv.vgrad(1.0, 1.0, w - 1.0, h - 1.0, rad - 1.0, theme::mix(t.bg, t.accent, if t.light { 0.07 } else { 0.11 }), t.bg);
-            cv.radial(w / 2.0, (super::Y_CTRL + 20) as f32 * s, w * 0.55, 110.0 * s, t.lit, 0.30 * glow);
+            cv.border_glow(0.0, 0.0, w, h, rad, 26.0 * s, t.lit, 0.30 * glow);
             for (fx, fy) in [(0.18, 0.1), (0.84, 0.2), (0.72, 0.86), (0.1, 0.66), (0.92, 0.55)] {
                 cv.round_a(w * fx - 1.3 * s, h * fy - 1.3 * s, w * fx + 1.3 * s, h * fy + 1.3 * s, 1.3 * s, theme::mix(t.lit, rgb(255, 255, 255), 0.5), 0.35 * glow);
             }
             line = theme::mix(t.accent, rgb(255, 255, 255), 0.45);
         }
         Style::Brasa => {
-            // Calido desde abajo y con grano, como una pieza metalica ahumada.
+            // Calido desde abajo, como una pieza metalica ahumada (sin grano: se veia como ruido de camara).
             cv.round(0.0, 0.0, w, h, rad, theme::mix(t.hairline, t.lit, 0.35));
             cv.vgrad(1.0, 1.0, w - 1.0, h - 1.0, rad - 1.0, theme::mix(t.bg, t.ink, 0.04), theme::mix(t.bg, rgb(0, 0, 0), 0.25));
             cv.radial(w / 2.0, h * 1.02, w * 0.8, h * 0.6, t.lit, 0.32 * glow);
-            cv.grain(0.05);
             line = theme::mix(t.lit, rgb(255, 255, 255), 0.3);
         }
         Style::Neon => {
@@ -62,7 +61,6 @@ pub fn card(cv: &mut Canvas, t: &Theme, w: f32, h: f32, rad: f32) {
         }
         _ => cv.vgrad(1.0, 1.0, w - 1.0, h - 1.0, rad - 1.0, t.top, t.bg),
     }
-    let _ = fatuo;
     let (l, r) = (rad, w - rad);
     let n = (r - l).max(1.0) as i32;
     for i in 0..n {
@@ -538,13 +536,26 @@ mod tests {
     }
 
     #[test]
-    fn fatuo_card_has_a_radial_tint_around_play_and_motes() {
+    fn brasa_card_background_has_no_per_pixel_noise() {
+        // El grano por pixel se veia como ruido de camara: la version final no lo usa.
+        let br = styled(Style::Brasa);
+        let mut cv = unsafe { Canvas::new(80, 400) };
+        card(&mut cv, &br, 80.0, 400.0, 10.0);
+        let (a, b) = (at(&mut cv, 40, 150) & 0xff, at(&mut cv, 41, 150) & 0xff);
+        assert!(a.abs_diff(b) <= 1, "pixeles vecinos casi iguales, sin grano: {a} vs {b}");
+    }
+
+    #[test]
+    fn fatuo_card_has_a_border_glow_that_works_on_any_card_shape() {
         let f = fatuo();
-        let mut cv = unsafe { Canvas::new(240, 226) };
-        card(&mut cv, &f, 240.0, 226.0, 16.0);
-        let y = (super::super::Y_CTRL + 20) as i32;
-        let (mid, edge) = (at(&mut cv, 120, y + 30), at(&mut cv, 14, y + 30));
-        assert!((mid & 0xff) > (edge & 0xff), "tinte mas fuerte detras del play: {mid:x} vs {edge:x}");
+        // Forma del panel (angosta y alta), nada que ver con donde esta el play en la card principal:
+        // el glow tiene que seguir el borde de ESTE rectangulo, no una posicion fija.
+        let mut cv = unsafe { Canvas::new(90, 600) };
+        card(&mut cv, &f, 90.0, 600.0, 14.0);
+        let (near_top, mid) = (at(&mut cv, 45, 6) & 0xff, at(&mut cv, 45, 300) & 0xff);
+        let (near_bottom, _) = (at(&mut cv, 45, 594) & 0xff, 0);
+        assert!(near_top > mid, "arriba, cerca de su propio borde: {near_top:x} vs {mid:x}");
+        assert!(near_bottom > mid, "abajo, cerca de su propio borde: {near_bottom:x} vs {mid:x}");
     }
 
     #[test]

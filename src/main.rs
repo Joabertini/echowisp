@@ -238,12 +238,16 @@ impl Canvas {
     }
 
     /// Cobertura antialias de un rectangulo redondeado en el pixel (x, y).
-    fn cov(x: i32, y: i32, cx: f32, cy: f32, hw: f32, hh: f32, rad: f32) -> f32 {
-        // Distancia con signo: adentro es negativa, asi un rectangulo de radio 0 tambien cubre del todo.
+    /// Distancia con signo al borde de un rectangulo redondeado: negativa adentro, asi un radio 0 tambien
+    /// cubre del todo. La usan `cov` (recortada a un borde de 1px) y `border_glow` (banda ancha, sin recortar).
+    fn sdist(x: i32, y: i32, cx: f32, cy: f32, hw: f32, hh: f32, rad: f32) -> f32 {
         let qx = (x as f32 + 0.5 - cx).abs() - (hw - rad);
         let qy = (y as f32 + 0.5 - cy).abs() - (hh - rad);
-        let d = (qx.max(0.0).powi(2) + qy.max(0.0).powi(2)).sqrt() + qx.max(qy).min(0.0) - rad;
-        (0.5 - d).clamp(0.0, 1.0)
+        (qx.max(0.0).powi(2) + qy.max(0.0).powi(2)).sqrt() + qx.max(qy).min(0.0) - rad
+    }
+
+    fn cov(x: i32, y: i32, cx: f32, cy: f32, hw: f32, hh: f32, rad: f32) -> f32 {
+        (0.5 - Self::sdist(x, y, cx, cy, hw, hh, rad)).clamp(0.0, 1.0)
     }
 
     /// Mezcla el color `c` (COLORREF) sobre el pixel i con opacidad `a`.
@@ -379,6 +383,26 @@ impl Canvas {
                 let d = (((x as f32 + 0.5 - cx) / rx).powi(2) + ((y as f32 + 0.5 - cy) / ry).powi(2)).sqrt();
                 if d < 1.0 {
                     Self::blend(px, (y * w + x) as usize, c, (1.0 - d).powi(2) * alpha);
+                }
+            }
+        }
+    }
+
+    /// Resplandor que sigue el perimetro de un rectangulo redondeado, apagandose hacia adentro en `band` px.
+    /// Sirve igual para la card principal o para el panel: solo depende de su propio rectangulo.
+    fn border_glow(&mut self, l: f32, t: f32, r: f32, b: f32, rad: f32, band: f32, c: u32, alpha: f32) {
+        let (w, h) = (self.w, self.h);
+        let (cx, cy, hw, hh) = ((l + r) / 2.0, (t + b) / 2.0, (r - l) / 2.0, (b - t) / 2.0);
+        let px = self.pixels();
+        for y in (t.floor() as i32).max(0)..(b.ceil() as i32).min(h) {
+            for x in (l.floor() as i32).max(0)..(r.ceil() as i32).min(w) {
+                // Self::cov ya da la distancia con signo (0.5 - d); se la reconstruye y se aplica una
+                // caida lineal en banda en vez del paso de 1px de la cobertura.
+                // d es negativo hacia adentro; la profundidad desde el borde es su valor absoluto ahi.
+                let depth = (-Self::sdist(x, y, cx, cy, hw, hh, rad)).max(0.0);
+                let k = (1.0 - depth / band).clamp(0.0, 1.0) * alpha;
+                if k > 0.0 {
+                    Self::blend(px, (y * w + x) as usize, c, k);
                 }
             }
         }
@@ -2521,6 +2545,27 @@ mod canvas_tests {
         let lo = at(&mut cv, 28, 30) & 0xff00;
         assert!(hi > lo, "arriba a la izquierda mas claro: {hi:x} vs {lo:x}");
         assert!(at(&mut cv, 20, 34) & 0xff >= 0xf0, "borde de abajo azul");
+    }
+
+    #[test]
+    fn border_glow_fades_from_the_edge_inward() {
+        let mut cv = unsafe { Canvas::new(60, 60) };
+        cv.pixels().fill(0);
+        cv.border_glow(0.0, 0.0, 60.0, 60.0, 10.0, 12.0, rgb(255, 255, 255), 1.0);
+        let near = at(&mut cv, 30, 2) & 0xff;
+        let far = at(&mut cv, 30, 29) & 0xff;
+        assert!(near > far, "cerca del borde mas brillante: {near} vs {far}");
+        assert_eq!(at(&mut cv, 30, 40), 0, "lejos del borde no toca nada");
+    }
+
+    #[test]
+    fn border_glow_works_on_any_rect_not_just_the_main_card() {
+        // Un rectangulo angosto y alto, como el panel: el glow sigue su propio borde.
+        let mut cv = unsafe { Canvas::new(90, 500) };
+        cv.pixels().fill(0);
+        cv.border_glow(0.0, 0.0, 90.0, 500.0, 14.0, 12.0, rgb(255, 255, 255), 1.0);
+        assert!(at(&mut cv, 45, 2) & 0xff > at(&mut cv, 45, 250) & 0xff, "arriba, cerca de su propio borde");
+        assert!(at(&mut cv, 45, 497) & 0xff > at(&mut cv, 45, 250) & 0xff, "abajo, cerca de su propio borde");
     }
 
     #[test]
