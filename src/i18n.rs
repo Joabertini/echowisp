@@ -39,6 +39,8 @@ pub const TEXTS: &[(&str, &str, &str)] = &[
     ("style_inst", "Instrumento", "Instrument"),
     ("style_min", "Minimal", "Minimal"),
     ("style_fatuo", "Fuego fatuo", "Will-o'-wisp"),
+    ("style_brasa", "Brasa", "Ember"),
+    ("style_neon", "Neón", "Neon"),
     ("audio_react", "Reacción al audio", "Audio reactive"),
     ("search_lists", "Buscá o abrí tus listas", "Search or open playlists"),
     ("no_session", "Sin sesión · tocá el ícono", "Sign in · tap the icon"),

@@ -14,17 +14,21 @@ pub enum Style {
     Instrumento,
     Minimal,
     Fatuo, // "fuego fatuo": el acento como fuente de luz
+    Brasa, // bisel facetado, brillo calido desde abajo, mecha que se consume
+    Neon,  // contornos huecos que se encienden, rejilla
 }
 
 impl Style {
     /// Orden del desplegable de temas.
-    pub const ALL: [Style; 3] = [Style::Instrumento, Style::Minimal, Style::Fatuo];
+    pub const ALL: [Style; 5] = [Style::Instrumento, Style::Minimal, Style::Fatuo, Style::Brasa, Style::Neon];
 
     pub fn key(self) -> &'static str {
         match self {
             Style::Instrumento => "instrumento",
             Style::Minimal => "minimal",
             Style::Fatuo => "fatuo",
+            Style::Brasa => "brasa",
+            Style::Neon => "neon",
         }
     }
 
@@ -34,6 +38,8 @@ impl Style {
             Style::Instrumento => "style_inst",
             Style::Minimal => "style_min",
             Style::Fatuo => "style_fatuo",
+            Style::Brasa => "style_brasa",
+            Style::Neon => "style_neon",
         }
     }
 }
@@ -285,12 +291,22 @@ mod tests {
     }
 
     #[test]
+    fn all_five_styles_roundtrip_in_dropdown_order() {
+        assert_eq!(Style::ALL, [Style::Instrumento, Style::Minimal, Style::Fatuo, Style::Brasa, Style::Neon]);
+        for st in Style::ALL {
+            let mut t = Theme::new(rgb(0, 0, 0), rgb(0x63, 0x66, 0xf1));
+            t.style = st;
+            assert_eq!(Theme::from_json(&t.to_json()).style, st, "{}", st.key());
+        }
+    }
+
+    #[test]
     fn fatuo_style_roundtrips() {
         let mut t = Theme::new(rgb(0, 0, 0), rgb(0x63, 0x66, 0xf1));
         t.style = Style::Fatuo;
         assert_eq!(t.to_json()["estilo"], "fatuo");
         assert_eq!(Theme::from_json(&t.to_json()).style, Style::Fatuo);
-        assert_eq!(Style::ALL.len(), 3);
+        assert_eq!(Style::ALL.len(), 5);
         assert_eq!(Style::ALL.iter().position(|&s| s == Style::Fatuo), Some(2));
     }
 

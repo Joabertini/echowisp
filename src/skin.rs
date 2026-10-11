@@ -20,14 +20,49 @@ pub fn card(cv: &mut Canvas, t: &Theme, w: f32, h: f32, rad: f32) {
         return;
     }
     let fatuo = t.style == Style::Fatuo;
-    if fatuo {
-        // Borde teñido por la luz y fondo que arriba tira al acento.
-        cv.round(0.0, 0.0, w, h, rad, theme::mix(t.hairline, t.accent, 0.3));
-        cv.vgrad(1.0, 1.0, w - 1.0, h - 1.0, rad - 1.0, theme::mix(t.bg, t.accent, if t.light { 0.07 } else { 0.11 }), t.bg);
-    } else {
-        cv.vgrad(1.0, 1.0, w - 1.0, h - 1.0, rad - 1.0, t.top, t.bg);
+    let s = rad / super::RADIUS;
+    let glow = (t.glow_a / 0.7).min(1.0); // 1.0 en oscuros, menos en claros
+    let mut line = t.accent;
+    match t.style {
+        Style::Fatuo => {
+            // Borde teñido por la luz, fondo que arriba tira al acento, luz detras del play y motas sueltas.
+            cv.round(0.0, 0.0, w, h, rad, theme::mix(t.hairline, t.accent, 0.3));
+            cv.vgrad(1.0, 1.0, w - 1.0, h - 1.0, rad - 1.0, theme::mix(t.bg, t.accent, if t.light { 0.07 } else { 0.11 }), t.bg);
+            cv.radial(w / 2.0, (super::Y_CTRL + 20) as f32 * s, w * 0.55, 110.0 * s, t.lit, 0.30 * glow);
+            for (fx, fy) in [(0.18, 0.1), (0.84, 0.2), (0.72, 0.86), (0.1, 0.66), (0.92, 0.55)] {
+                cv.round_a(w * fx - 1.3 * s, h * fy - 1.3 * s, w * fx + 1.3 * s, h * fy + 1.3 * s, 1.3 * s, theme::mix(t.lit, rgb(255, 255, 255), 0.5), 0.35 * glow);
+            }
+            line = theme::mix(t.accent, rgb(255, 255, 255), 0.45);
+        }
+        Style::Brasa => {
+            // Calido desde abajo y con grano, como una pieza metalica ahumada.
+            cv.round(0.0, 0.0, w, h, rad, theme::mix(t.hairline, t.lit, 0.35));
+            cv.vgrad(1.0, 1.0, w - 1.0, h - 1.0, rad - 1.0, theme::mix(t.bg, t.ink, 0.04), theme::mix(t.bg, rgb(0, 0, 0), 0.25));
+            cv.radial(w / 2.0, h * 1.02, w * 0.8, h * 0.6, t.lit, 0.32 * glow);
+            cv.grain(0.05);
+            line = theme::mix(t.lit, rgb(255, 255, 255), 0.3);
+        }
+        Style::Neon => {
+            // Fondo plano con una rejilla tenue y el borde encendido.
+            cv.round(0.0, 0.0, w, h, rad, theme::mix(t.bg, t.lit, 0.5));
+            cv.round(1.0, 1.0, w - 1.0, h - 1.0, rad - 1.0, t.bg);
+            let step = (16.0 * s).round().max(4.0);
+            let mut x = step;
+            while x < w {
+                cv.round_a(x, 1.0, x + 1.0, h - 1.0, 0.0, t.lit, 0.06);
+                x += step;
+            }
+            let mut y = step;
+            while y < h {
+                cv.round_a(1.0, y, w - 1.0, y + 1.0, 0.0, t.lit, 0.06);
+                y += step;
+            }
+            cv.ring(1.0, 1.0, w - 1.0, h - 1.0, rad - 1.0, 3.0 * s, t.lit, 0.07);
+            line = t.lit;
+        }
+        _ => cv.vgrad(1.0, 1.0, w - 1.0, h - 1.0, rad - 1.0, t.top, t.bg),
     }
-    let line = if fatuo { theme::mix(t.accent, rgb(255, 255, 255), 0.45) } else { t.accent };
+    let _ = fatuo;
     let (l, r) = (rad, w - rad);
     let n = (r - l).max(1.0) as i32;
     for i in 0..n {
@@ -41,6 +76,39 @@ pub fn button(cv: &mut Canvas, t: &Theme, g: &mut glow::Cache, s: f32, l: f32, t
     if t.style == Style::Minimal {
         let c = if st.active { t.accent } else { theme::mix(t.tab, t.hover, st.hover) };
         cv.round(l, top, r, b, rad, c);
+        return;
+    }
+    if t.style == Style::Brasa {
+        // Pieza facetada: relleno ahumado, filo calido y, elegida, un bloque encendido.
+        let cut = (5.0 * s).min((b - top) / 3.0).max(1.0);
+        let k = if st.active { 1.0 } else { 0.0 } + st.flash;
+        if k > 0.0 {
+            let spr = g.get((r - l).round() as i32, (b - top).round() as i32, cut, (8.0 * s).round() as i32);
+            cv.glow(spr, l, top, t.lit, t.glow_a * 0.6 * k.min(1.5));
+        }
+        if st.active {
+            cv.bevel_a(l, top, r, b, cut, theme::mix(t.lit, rgb(0, 0, 0), 0.12), 1.0);
+            cv.round_a(l + cut, top + 1.0, r - cut, top + 2.0, 0.0, rgb(255, 255, 255), 0.25);
+        } else {
+            cv.bevel_a(l, top, r, b, cut, theme::mix(t.tab, t.lit, 0.05 + 0.08 * st.hover), 1.0);
+            cv.bevel_ring(l, top, r, b, cut, 1.0, t.lit, 0.3 + 0.4 * st.hover + 0.4 * st.flash.min(1.0));
+            cv.round_a(l + cut, top + 1.0, r - cut, top + 2.0, 0.0, t.ink, 0.07);
+        }
+        return;
+    }
+    if t.style == Style::Neon {
+        // Contorno hueco que se enciende entero; elegido, doble y con brillo.
+        let rad = (3.0 * s).min((b - top) / 2.0);
+        let k = if st.active { 1.0 } else { 0.0 } + st.flash;
+        let gl = 0.25 * st.hover + 0.5 * k;
+        if gl > 0.0 {
+            let spr = g.get((r - l).round() as i32, (b - top).round() as i32, rad, (7.0 * s).round() as i32);
+            cv.glow(spr, l, top, t.lit, t.glow_a * gl.min(1.2));
+        }
+        if st.active {
+            cv.round_a(l, top, r, b, rad, t.lit, 0.12);
+        }
+        cv.ring(l, top, r, b, rad, if st.active { 2.0 * s.max(1.0) } else { 1.0 }, t.lit, if st.active { 1.0 } else { (0.45 + 0.45 * st.hover + 0.4 * st.flash).min(1.0) });
         return;
     }
     if t.style == Style::Fatuo {
@@ -76,6 +144,12 @@ pub fn segments(cv: &mut Canvas, t: &Theme, g: &mut glow::Cache, s: f32, l: f32,
     if t.style == Style::Fatuo {
         return if n <= 7 { dots(cv, t, g, s, l, top, r, b, n, lit, c, boot) } else { beam(cv, t, g, s, l, top, r, b, lit / n as f32, c, boot) };
     }
+    if t.style == Style::Brasa && n > 7 {
+        return wick(cv, t, g, s, l, top, r, b, lit / n as f32, c, boot);
+    }
+    if matches!(t.style, Style::Brasa | Style::Neon) {
+        return cells(cv, t, g, s, l, top, r, b, n, lit, c, boot);
+    }
     let gap = (2.0 * s).max(1.0);
     let sw = (r - l - gap * (n as f32 - 1.0)) / n as f32;
     for i in 0..n {
@@ -95,6 +169,27 @@ pub fn segments(cv: &mut Canvas, t: &Theme, g: &mut glow::Cache, s: f32, l: f32,
 pub fn led(cv: &mut Canvas, t: &Theme, g: &mut glow::Cache, s: f32, cx: f32, cy: f32, size: f32, on: f32, c: u32) {
     let c = if c == t.accent { t.lit } else { c };
     let (l, top) = (cx - size / 2.0, cy - size / 2.0);
+    if t.style == Style::Brasa {
+        // Brasa facetada.
+        let cut = size * 0.3;
+        cv.bevel_a(l, top, l + size, top + size, cut, t.led_off, 1.0);
+        if on > 0.0 {
+            let spr = g.get(size.round() as i32, size.round() as i32, cut, (6.0 * s).round() as i32);
+            cv.glow(spr, l, top, c, t.glow_a * on);
+            cv.bevel_a(l, top, l + size, top + size, cut, c, on.min(1.0));
+        }
+        return;
+    }
+    if t.style == Style::Neon {
+        // Cuadradito hueco que se llena.
+        cv.ring(l, top, l + size, top + size, s, 1.0, t.led_off, 1.0);
+        if on > 0.0 {
+            let spr = g.get(size.round() as i32, size.round() as i32, s, (6.0 * s).round() as i32);
+            cv.glow(spr, l, top, c, t.glow_a * on);
+            cv.round_a(l, top, l + size, top + size, s, c, on.min(1.0));
+        }
+        return;
+    }
     if t.style == Style::Fatuo {
         // Una chispa redonda.
         cv.dot(cx, cy, size / 2.0, t.led_off);
@@ -119,6 +214,16 @@ pub fn well(cv: &mut Canvas, t: &Theme, l: f32, top: f32, r: f32, b: f32, rad: f
         cv.round(l, top, r, b, rad, t.card);
         return;
     }
+    if t.style == Style::Brasa {
+        let cut = (rad * 0.9).min((b - top) / 3.0).max(1.0);
+        cv.bevel_a(l, top, r, b, cut, theme::mix(t.bg, rgb(0, 0, 0), 0.45), 1.0);
+        cv.bevel_ring(l, top, r, b, cut, 1.0, t.lit, 0.22);
+        return;
+    }
+    if t.style == Style::Neon {
+        cv.ring(l, top, r, b, (rad * 0.4).max(1.0), 1.0, t.lit, 0.3);
+        return;
+    }
     if t.style == Style::Fatuo {
         cv.round(l, top, r, b, rad * 1.4, theme::mix(t.bg, t.ink, 0.04));
         cv.ring(l, top, r, b, rad * 1.4, 1.0, t.accent, 0.14);
@@ -137,6 +242,33 @@ pub fn switch(cv: &mut Canvas, t: &Theme, g: &mut glow::Cache, s: f32, l: f32, t
         cv.dot(if on { r - (b - top) / 2.0 } else { l + (b - top) / 2.0 }, (top + b) / 2.0, k, t.ink);
         return;
     }
+    if t.style == Style::Brasa {
+        let hh = b - top;
+        let cut = hh * 0.3;
+        if on {
+            let spr = g.get((r - l).round() as i32, hh.round() as i32, cut, (6.0 * s).round() as i32);
+            cv.glow(spr, l, top, t.lit, t.glow_a * 0.4);
+        }
+        cv.bevel_a(l, top, r, b, cut, if on { theme::mix(t.tab, t.lit, 0.35) } else { theme::mix(t.tab, t.hover, st.hover) }, 1.0);
+        cv.bevel_ring(l, top, r, b, cut, 1.0, t.lit, if on { 0.8 } else { 0.3 });
+        let k = hh - 6.0 * s;
+        let x = if on { r - 3.0 * s - k } else { l + 3.0 * s };
+        cv.bevel_a(x, top + 3.0 * s, x + k, top + 3.0 * s + k, k * 0.3, if on { theme::mix(t.lit, rgb(255, 255, 255), 0.65) } else { t.dim }, 1.0);
+        return;
+    }
+    if t.style == Style::Neon {
+        let hh = b - top;
+        let rad = (hh / 2.5).max(1.0);
+        cv.ring(l, top, r, b, rad, 1.0, t.lit, if on { 1.0 } else { 0.35 });
+        let k = hh - 7.0 * s;
+        let x = if on { r - 3.5 * s - k } else { l + 3.5 * s };
+        if on {
+            let spr = g.get(k.round() as i32, k.round() as i32, s, (5.0 * s).round() as i32);
+            cv.glow(spr, x, top + 3.5 * s, t.lit, t.glow_a * 0.8);
+        }
+        cv.round_a(x, top + 3.5 * s, x + k, top + 3.5 * s + k, s, if on { t.lit } else { t.dim }, 1.0);
+        return;
+    }
     if t.style == Style::Fatuo {
         // Pildora; prendida se tiñe y brilla.
         let rad = (b - top) / 2.0;
@@ -153,6 +285,87 @@ pub fn switch(cv: &mut Canvas, t: &Theme, g: &mut glow::Cache, s: f32, l: f32, t
     }
     button(cv, t, g, s, l, top, r, b, 4.0 * s, St { active: false, ..st });
     led(cv, t, g, s, (l + r) / 2.0, (top + b) / 2.0, 6.0 * s, if on { 1.0 } else { 0.0 }, t.accent);
+}
+
+/// Color del glifo del play segun el estilo (sobre su fondo: tecla, disco de luz o bloque encendido).
+pub fn play_glyph(t: &Theme) -> u32 {
+    match t.style {
+        Style::Minimal => t.bg,
+        Style::Instrumento => t.lit,
+        Style::Fatuo => theme::mix(t.lit, rgb(0, 0, 0), 0.78),
+        Style::Brasa => {
+            let fill = theme::mix(t.lit, rgb(0, 0, 0), 0.12);
+            if theme::contrast(rgb(0, 0, 0), fill) >= theme::contrast(rgb(255, 255, 255), fill) { rgb(0, 0, 0) } else { rgb(255, 255, 255) }
+        }
+        Style::Neon => t.ink,
+    }
+}
+
+/// Color del titulo: Brasa y Neon lo tiñen un poco con el acento.
+pub fn title_color(t: &Theme) -> u32 {
+    match t.style {
+        Style::Brasa => theme::mix(t.ink, t.lit, 0.2),
+        Style::Neon => theme::mix(t.ink, t.lit, 0.4),
+        _ => t.ink,
+    }
+}
+
+/// Celdas de Brasa (facetadas) y Neon (huecas): `n` casillas, `lit` encendidas.
+fn cells(cv: &mut Canvas, t: &Theme, g: &mut glow::Cache, s: f32, l: f32, top: f32, r: f32, b: f32, n: usize, lit: f32, c: u32, boot: f32) {
+    let gap = (2.0 * s).max(1.0);
+    let sw = (r - l - gap * (n as f32 - 1.0)) / n as f32;
+    let brasa = t.style == Style::Brasa;
+    let cut = (1.5 * s).min(sw / 3.0);
+    for i in 0..n {
+        let x = l + i as f32 * (sw + gap);
+        let booted = boot >= (i as f32 + 1.0) / n as f32;
+        let on = if booted { (lit - i as f32).clamp(0.0, 1.0) } else { 0.0 };
+        if brasa {
+            cv.bevel_a(x, top, x + sw, b, cut, t.led_off, 1.0);
+        } else {
+            cv.ring(x, top, x + sw, b, 0.0, 1.0, t.led_off, 1.0);
+        }
+        if on > 0.0 {
+            let spr = g.get(sw.round() as i32, (b - top).round() as i32, if brasa { cut } else { 0.0 }, (4.0 * s).round() as i32);
+            cv.glow(spr, x, top, c, t.glow_a * 0.6 * on);
+            if brasa {
+                cv.bevel_a(x, top, x + sw, b, cut, c, on);
+            } else {
+                cv.round_a(x, top, x + sw, b, 0.0, c, on * 0.85);
+                cv.ring(x, top, x + sw, b, 0.0, 1.0, c, on);
+            }
+        }
+    }
+}
+
+/// Mecha de Brasa (progreso, volumen): la parte encendida pasa de acento a amarillo hacia la punta, que arde.
+fn wick(cv: &mut Canvas, t: &Theme, g: &mut glow::Cache, s: f32, l: f32, top: f32, r: f32, b: f32, f: f32, c: u32, boot: f32) {
+    let th = (b - top).min(4.0 * s).max(1.0);
+    let cy = (top + b) / 2.0;
+    let (y0, y1) = (cy - th / 2.0, cy + th / 2.0);
+    cv.round(l, y0, r, y1, th / 2.0, t.led_off);
+    let x = l + (r - l) * f.min(boot).clamp(0.0, 1.0);
+    if x - l < 1.0 {
+        return;
+    }
+    let step = (12.0 * s).round().max(4.0);
+    let pad = (5.0 * s).round() as i32;
+    let mut gx = l;
+    while gx < x {
+        let w = (x - gx).min(step);
+        let spr = g.get(w.round().max(1.0) as i32, th.round().max(1.0) as i32, 0.0, pad);
+        cv.glow(spr, gx, y0, c, t.glow_a * 0.4);
+        gx += step;
+    }
+    let hot = rgb(255, 200, 90);
+    let span = (x - l).max(1.0);
+    let mut px = l;
+    while px < x {
+        let k = ((px - l) / span).powf(1.2) * 0.85;
+        cv.round_a(px, y0, px + 1.0, y1, 0.0, theme::mix(c, hot, k), 1.0);
+        px += 1.0;
+    }
+    cv.round_a(x - th, cy - th * 0.8, x + th * 0.2, cy + th * 0.8, th * 0.8, theme::mix(c, rgb(255, 255, 255), 0.7), 0.9);
 }
 
 /// Fuego fatuo con pocos niveles (ambientes, vumetro): puntos que se encienden.
@@ -263,12 +476,107 @@ mod tests {
     #[test]
     fn fatuo_card_has_tinted_top() {
         let t = fatuo();
-        let mut cv = unsafe { Canvas::new(60, 60) };
-        card(&mut cv, &t, 60.0, 60.0, 10.0);
+        let mut cv = unsafe { Canvas::new(60, 400) }; // alta: abajo ya no llega la luz del play
+        card(&mut cv, &t, 60.0, 400.0, 10.0);
         let top = at(&mut cv, 30, 8);
-        let bottom = at(&mut cv, 30, 52);
+        let bottom = at(&mut cv, 30, 392);
         assert_ne!(top, bottom, "gradiente");
         assert!((top & 0xff) > (bottom & 0xff), "arriba tira al acento (azul)");
+    }
+
+    fn styled(st: Style) -> Theme {
+        let mut t = Theme::new(rgb(0x14, 0x10, 0x10), rgb(0xff, 0x5a, 0x1a));
+        t.style = st;
+        t
+    }
+
+    fn sheet(t: &Theme, w: i32, h: i32) -> Canvas {
+        let mut cv = unsafe { Canvas::new(w, h) };
+        cv.pixels().fill(theme::px(t.bg));
+        cv
+    }
+
+    #[test]
+    fn brasa_button_is_faceted_and_neon_is_hollow() {
+        let (br, ne) = (styled(Style::Brasa), styled(Style::Neon));
+        let mut g = glow::Cache::default();
+        let mut cv = sheet(&br, 60, 40);
+        button(&mut cv, &br, &mut g, 1.0, 10.0, 10.0, 50.0, 30.0, 6.0, St::default());
+        assert_eq!(at(&mut cv, 10, 10), theme::px(br.bg), "esquina cortada");
+        assert_ne!(at(&mut cv, 30, 20), theme::px(br.bg), "relleno");
+        let mut cv = sheet(&ne, 60, 40);
+        button(&mut cv, &ne, &mut g, 1.0, 10.0, 10.0, 50.0, 30.0, 6.0, St::default());
+        assert_ne!(at(&mut cv, 30, 10), theme::px(ne.bg), "contorno");
+        let inner = at(&mut cv, 30, 20);
+        assert!((inner & 0xff).abs_diff(theme::px(ne.bg) & 0xff) < 12, "hueco por dentro");
+    }
+
+    #[test]
+    fn neon_active_button_lights_its_whole_outline() {
+        let ne = styled(Style::Neon);
+        let mut g = glow::Cache::default();
+        let mut cv = sheet(&ne, 60, 40);
+        let mut idle = sheet(&ne, 60, 40);
+        button(&mut idle, &ne, &mut g, 1.0, 10.0, 10.0, 50.0, 30.0, 6.0, St::default());
+        button(&mut cv, &ne, &mut g, 1.0, 10.0, 10.0, 50.0, 30.0, 6.0, St { active: true, ..St::default() });
+        let (a, b) = (at(&mut cv, 30, 10), at(&mut idle, 30, 10));
+        assert!((a >> 16 & 0xff) + (a >> 8 & 0xff) + (a & 0xff) > (b >> 16 & 0xff) + (b >> 8 & 0xff) + (b & 0xff));
+    }
+
+    #[test]
+    fn brasa_card_glows_from_below_and_neon_has_a_grid() {
+        let br = styled(Style::Brasa);
+        let mut cv = unsafe { Canvas::new(80, 120) };
+        card(&mut cv, &br, 80.0, 120.0, 10.0);
+        let (top, bottom) = (at(&mut cv, 40, 20), at(&mut cv, 40, 112));
+        assert!((bottom >> 16 & 0xff) > (top >> 16 & 0xff), "mas calido abajo");
+        let ne = styled(Style::Neon);
+        let mut cv = unsafe { Canvas::new(80, 120) };
+        card(&mut cv, &ne, 80.0, 120.0, 16.0);
+        let (line, between) = (at(&mut cv, 32, 60), at(&mut cv, 24, 60)); // escala 1: paso de 16, x=32 es linea
+        assert_ne!(line, between, "rejilla");
+    }
+
+    #[test]
+    fn fatuo_card_has_a_radial_tint_around_play_and_motes() {
+        let f = fatuo();
+        let mut cv = unsafe { Canvas::new(240, 226) };
+        card(&mut cv, &f, 240.0, 226.0, 16.0);
+        let y = (super::super::Y_CTRL + 20) as i32;
+        let (mid, edge) = (at(&mut cv, 120, y + 30), at(&mut cv, 14, y + 30));
+        assert!((mid & 0xff) > (edge & 0xff), "tinte mas fuerte detras del play: {mid:x} vs {edge:x}");
+    }
+
+    #[test]
+    fn neon_segments_are_hollow_when_off_and_brasa_wick_warms_to_the_tip() {
+        let ne = styled(Style::Neon);
+        let mut g = glow::Cache::default();
+        let mut cv = sheet(&ne, 70, 12);
+        segments(&mut cv, &ne, &mut g, 1.0, 0.0, 2.0, 70.0, 10.0, 5, 0.0, ne.accent, 1.0);
+        assert!((at(&mut cv, 6, 6) & 0xff).abs_diff(theme::px(ne.bg) & 0xff) < 12, "apagado hueco");
+        let br = styled(Style::Brasa);
+        let mut cv = sheet(&br, 140, 12);
+        segments(&mut cv, &br, &mut g, 1.0, 0.0, 3.0, 140.0, 9.0, 14, 14.0, br.accent, 1.0);
+        let (a, b) = (at(&mut cv, 8, 6), at(&mut cv, 130, 6));
+        assert!((b >> 8 & 0xff) > (a >> 8 & 0xff), "la punta es mas clara/amarilla");
+    }
+
+    #[test]
+    fn play_glyph_reads_on_every_style() {
+        for st in [Style::Instrumento, Style::Fatuo, Style::Brasa, Style::Neon] {
+            for bg in [rgb(0, 0, 0), rgb(0xf4, 0xf1, 0xea)] {
+                for acc in [rgb(0xff, 0x5a, 0x1a), rgb(0xea, 0xb3, 0x08), rgb(0x22, 0xc5, 0x5e)] {
+                    let mut t = Theme::new(bg, acc);
+                    t.style = st;
+                    let fill = match st {
+                        Style::Brasa => theme::mix(t.lit, rgb(0, 0, 0), 0.15),
+                        Style::Fatuo => theme::mix(t.lit, rgb(255, 255, 255), 0.45),
+                        _ => t.tab,
+                    };
+                    assert!(theme::contrast(play_glyph(&t), fill) >= 3.0, "{:?} {:x} {:x}", st, bg, acc);
+                }
+            }
+        }
     }
 
     #[test]

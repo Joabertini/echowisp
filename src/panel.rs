@@ -1097,7 +1097,7 @@ mod tests {
 
     #[test]
     fn style_texts_exist_in_both_languages() {
-        for k in ["style", "style_inst", "style_min", "style_fatuo", "audio_react"] {
+        for k in ["style", "style_inst", "style_min", "style_fatuo", "style_brasa", "style_neon", "audio_react"] {
             assert!(crate::i18n::TEXTS.iter().any(|(key, es, en)| *key == k && !es.is_empty() && !en.is_empty()), "{k}");
         }
     }

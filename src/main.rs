@@ -329,6 +329,74 @@ impl Canvas {
         }
     }
 
+    /// Cobertura de un rectangulo con las cuatro esquinas cortadas a 45 grados (`cut` px sobre cada lado).
+    fn bevel_cov(x: i32, y: i32, l: f32, t: f32, r: f32, b: f32, cut: f32) -> f32 {
+        let (px, py) = (x as f32 + 0.5, y as f32 + 0.5);
+        let ax = (px - l + 0.5).clamp(0.0, 1.0).min((r - px + 0.5).clamp(0.0, 1.0));
+        let ay = (py - t + 0.5).clamp(0.0, 1.0).min((b - py + 0.5).clamp(0.0, 1.0));
+        let k = std::f32::consts::FRAC_1_SQRT_2;
+        let c = |d: f32| (0.5 + d * k).clamp(0.0, 1.0);
+        ax * ay * c((px - l) + (py - t) - cut) * c((r - px) + (py - t) - cut) * c((px - l) + (b - py) - cut) * c((r - px) + (b - py) - cut)
+    }
+
+    /// Rectangulo facetado (esquinas cortadas) con opacidad `alpha`.
+    fn bevel_a(&mut self, l: f32, t: f32, r: f32, b: f32, cut: f32, c: u32, alpha: f32) {
+        let (w, h) = (self.w, self.h);
+        let px = self.pixels();
+        for y in (t.floor() as i32).max(0)..(b.ceil() as i32).min(h) {
+            for x in (l.floor() as i32).max(0)..(r.ceil() as i32).min(w) {
+                let k = Self::bevel_cov(x, y, l, t, r, b, cut) * alpha;
+                if k > 0.0 {
+                    Self::blend(px, (y * w + x) as usize, c, k);
+                }
+            }
+        }
+    }
+
+    /// Borde de ancho `width` de un rectangulo facetado.
+    fn bevel_ring(&mut self, l: f32, t: f32, r: f32, b: f32, cut: f32, width: f32, c: u32, alpha: f32) {
+        let (w, h) = (self.w, self.h);
+        let px = self.pixels();
+        let icut = (cut - 0.586 * width).max(0.0);
+        for y in (t.floor() as i32).max(0)..(b.ceil() as i32).min(h) {
+            for x in (l.floor() as i32).max(0)..(r.ceil() as i32).min(w) {
+                let out = Self::bevel_cov(x, y, l, t, r, b, cut);
+                let inn = Self::bevel_cov(x, y, l + width, t + width, r - width, b - width, icut);
+                let k = (out - inn).max(0.0) * alpha;
+                if k > 0.0 {
+                    Self::blend(px, (y * w + x) as usize, c, k);
+                }
+            }
+        }
+    }
+
+    /// Resplandor elipitico centrado en (cx, cy) que se apaga hacia el borde de la elipse.
+    fn radial(&mut self, cx: f32, cy: f32, rx: f32, ry: f32, c: u32, alpha: f32) {
+        let (w, h) = (self.w, self.h);
+        let px = self.pixels();
+        for y in ((cy - ry).floor() as i32).max(0)..((cy + ry).ceil() as i32).min(h) {
+            for x in ((cx - rx).floor() as i32).max(0)..((cx + rx).ceil() as i32).min(w) {
+                let d = (((x as f32 + 0.5 - cx) / rx).powi(2) + ((y as f32 + 0.5 - cy) / ry).powi(2)).sqrt();
+                if d < 1.0 {
+                    Self::blend(px, (y * w + x) as usize, c, (1.0 - d).powi(2) * alpha);
+                }
+            }
+        }
+    }
+
+    /// Grano fino y siempre igual (ruido por posicion, sin azar) sobre todo el lienzo.
+    fn grain(&mut self, alpha: f32) {
+        let (w, h) = (self.w, self.h);
+        let px = self.pixels();
+        for y in 0..h {
+            for x in 0..w {
+                let hs = ((x as u32).wrapping_mul(73856093) ^ (y as u32).wrapping_mul(19349663)).wrapping_mul(2654435761);
+                let n = ((hs >> 24) & 0xff) as f32 / 255.0;
+                Self::blend(px, (y * w + x) as usize, if n > 0.5 { 0x00ff_ffff } else { 0 }, (n - 0.5).abs() * 2.0 * alpha);
+            }
+        }
+    }
+
     /// Circulo con luz: `hi` arriba a la izquierda, `lo` hacia el borde (el play de Fuego fatuo).
     fn disc(&mut self, cx: f32, cy: f32, r: f32, hi: u32, lo: u32) {
         let (w, h) = (self.w, self.h);
@@ -1726,14 +1794,16 @@ impl App {
 
         // ---- Texto ----
         let fade = if inst { self.anims.value(anim::Key::Title, self.now_ms()) } else { None };
-        let up = |s: &str| if fatuo { s.to_string() } else { s.to_uppercase() }; // Instrumento: titulo en mayusculas
+        // Instrumento y Neon: titulo en mayusculas.
+        let up = |s: &str| if matches!(tm.style, theme::Style::Instrumento | theme::Style::Neon) { s.to_uppercase() } else { s.to_string() };
+        let tc = skin::title_color(tm);
         if let Some(v) = fade {
             // Cambio de cancion: el titulo viejo se desvanece y entra el nuevo.
-            cv.text(self.f.title, &up(&self.prev_title), self.r(40, 8, W - 40, 28), theme::mix(tm.ink, tm.bg, v), DT_CENTER);
-            cv.text(self.f.title, &up(line1), self.r(40, 8, W - 40, 28), theme::mix(tm.bg, tm.ink, v), DT_CENTER);
+            cv.text(self.f.title, &up(&self.prev_title), self.r(40, 8, W - 40, 28), theme::mix(tc, tm.bg, v), DT_CENTER);
+            cv.text(self.f.title, &up(line1), self.r(40, 8, W - 40, 28), theme::mix(tm.bg, tc, v), DT_CENTER);
             cv.text(self.f.light, line2, self.r(40, 27, W - 40, 44), theme::mix(tm.bg, c2, v), DT_CENTER);
         } else if inst {
-            cv.text(self.f.title, &up(line1), self.r(40, 8, W - 40, 28), tm.ink, DT_CENTER);
+            cv.text(self.f.title, &up(line1), self.r(40, 8, W - 40, 28), tc, DT_CENTER);
             cv.text(self.f.light, line2, self.r(40, 27, W - 40, 44), c2, DT_CENTER);
         } else {
             cv.text(self.f.title, line1, self.r(40, 8, W - 40, 28), th().ink, DT_CENTER);
@@ -1749,7 +1819,7 @@ impl App {
         let ic = |hb: Hit| if self.hover == hb { th().ink } else { th().dim };
         cv.text(self.f.icon, "\u{E8B1}", self.zone(Hit::Shuffle), ic(Hit::Shuffle), DT_CENTER);
         cv.text(self.f.icon_big, "\u{E892}", self.zone(Hit::Prev), ic(Hit::Prev), DT_CENTER);
-        cv.text(self.f.icon_big, if self.paused { "\u{E768}" } else { "\u{E769}" }, self.zone(Hit::Play), if fatuo { theme::mix(tm.lit, rgb(0, 0, 0), 0.78) } else if inst { tm.lit } else { th().bg }, DT_CENTER);
+        cv.text(self.f.icon_big, if self.paused { "\u{E768}" } else { "\u{E769}" }, self.zone(Hit::Play), if inst { skin::play_glyph(tm) } else { th().bg }, DT_CENTER);
         cv.text(self.f.icon_big, "\u{E893}", self.zone(Hit::Next), ic(Hit::Next), DT_CENTER);
         let (rg, rc) = match self.repeat.as_str() {
             "ONE" => ("\u{E8ED}", th().accent),
@@ -1949,7 +2019,7 @@ unsafe fn font_exists(face: &str) -> bool {
 
 unsafe fn make_fonts(scale: f32, style: theme::Style) -> Fonts {
     let px = |v: f32| (v * scale).round() as i32;
-    if style == theme::Style::Instrumento && font_exists("Bahnschrift") {
+    if matches!(style, theme::Style::Instrumento | theme::Style::Neon) && font_exists("Bahnschrift") {
         Fonts {
             title: font(px(15.0), 600, "Bahnschrift"),
             text: font(px(12.5), 400, "Bahnschrift"),
@@ -1959,7 +2029,7 @@ unsafe fn make_fonts(scale: f32, style: theme::Style) -> Fonts {
             icon: font(px(13.0), 400, "Segoe MDL2 Assets"),
             icon_big: font(px(15.0), 400, "Segoe MDL2 Assets"),
         }
-    } else if style == theme::Style::Fatuo {
+    } else if matches!(style, theme::Style::Fatuo | theme::Style::Brasa) {
         // Segoe UI, con el subtitulo en su peso liviano.
         Fonts {
             title: font(px(14.5), 600, "Segoe UI"),
@@ -2451,6 +2521,38 @@ mod canvas_tests {
         let lo = at(&mut cv, 28, 30) & 0xff00;
         assert!(hi > lo, "arriba a la izquierda mas claro: {hi:x} vs {lo:x}");
         assert!(at(&mut cv, 20, 34) & 0xff >= 0xf0, "borde de abajo azul");
+    }
+
+    #[test]
+    fn bevel_cuts_its_corners() {
+        let mut cv = unsafe { Canvas::new(40, 30) };
+        cv.pixels().fill(0);
+        cv.bevel_a(5.0, 5.0, 35.0, 25.0, 6.0, rgb(255, 255, 255), 1.0);
+        assert_eq!(at(&mut cv, 5, 5), 0, "esquina cortada");
+        assert_eq!(at(&mut cv, 20, 15), 0x00ff_ffff, "centro lleno");
+        assert_eq!(at(&mut cv, 20, 5), 0x00ff_ffff, "borde recto lleno");
+        let mut r = unsafe { Canvas::new(40, 30) };
+        r.pixels().fill(0);
+        r.bevel_ring(5.0, 5.0, 35.0, 25.0, 6.0, 1.0, rgb(255, 255, 255), 1.0);
+        assert_eq!(at(&mut r, 20, 15), 0, "el anillo esta vacio");
+        assert_eq!(at(&mut r, 20, 5), 0x00ff_ffff, "borde del anillo");
+    }
+
+    #[test]
+    fn radial_fades_with_distance_and_grain_is_stable() {
+        let mut cv = unsafe { Canvas::new(40, 40) };
+        cv.pixels().fill(0);
+        cv.radial(20.0, 20.0, 15.0, 15.0, rgb(255, 255, 255), 1.0);
+        assert!(at(&mut cv, 20, 20) & 0xff > at(&mut cv, 30, 20) & 0xff);
+        assert_eq!(at(&mut cv, 2, 2), 0, "fuera del radio");
+        let mut a = unsafe { Canvas::new(20, 20) };
+        let mut b = unsafe { Canvas::new(20, 20) };
+        a.pixels().fill(0x0020_2020);
+        b.pixels().fill(0x0020_2020);
+        a.grain(0.2);
+        b.grain(0.2);
+        assert_eq!(a.pixels().to_vec(), b.pixels().to_vec(), "mismo grano siempre");
+        assert_ne!(a.pixels().to_vec(), vec![0x0020_2020; 400], "algo cambia");
     }
 
     #[test]
