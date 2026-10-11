@@ -398,6 +398,7 @@ struct App {
     blur_panel: theme::BlurCache,
     panel_edit: Option<(u8, String, u32)>, // (0 fondo/tinte, 1 acento; texto tecleado; color original)
     sec_open: [bool; 6],
+    ytm_start: bool,   // YouTube Music arranca con la card (card.json); si no, a pedido
     show_br: bool,     // filas del puente y de Discord a la vista (card.json)
     show_dsc: bool,
     rep: report::Form, // "Reportar un problema" (panel.rs)
@@ -447,7 +448,9 @@ impl App {
         (tw + self.px(56)).clamp(self.px(110), self.px(W))
     }
     fn lines(&self) -> (&str, &str) {
-        if !self.ready {
+        if !self.ready && !self.eng.awake() {
+            (t("ytm_off"), t("ytm_tap"))
+        } else if !self.ready {
             (self.status.as_str(), "")
         } else if self.title.is_empty() {
             (t("no_music"), if self.logged { t("search_lists") } else { t("no_session") })
@@ -861,6 +864,13 @@ impl App {
     }
 
     fn click(&mut self, x: i32, y: i32) {
+        // YouTube Music en reposo: tocar el titulo lo arranca.
+        if !self.ready && !self.eng.awake() && self.in_title_box(x, y) {
+            self.eng.wake("card");
+            self.status = t("starting_ytm").into();
+            self.invalidate();
+            return;
+        }
         match self.hit(x, y) {
             Hit::Close => unsafe {
                 DestroyWindow(self.hwnd);
@@ -954,6 +964,19 @@ impl App {
                 }
                 self.at = Instant::now();
                 self.update_tick();
+            }
+            Ev::Asleep => {
+                // Sin Brave no queda cancion: nada del tema anterior en la card.
+                self.ready = false;
+                self.title.clear();
+                self.artist.clear();
+                self.paused = true;
+                self.pos = 0.0;
+                self.dur = 0.0;
+                self.update_tick();
+                if self.panel == Panel::Config {
+                    self.panel_render(); // sin Brave ya no va "Cerrar YouTube Music"
+                }
             }
             Ev::Reply(tag, r) => {
                 let ok = r["ok"].as_bool().unwrap_or(false);
@@ -1711,7 +1734,8 @@ fn main() {
 
         let a = Box::new(App {
             hwnd,
-            eng: engine::start(hwnd as isize),
+            eng: engine::start(hwnd as isize, panel::card_pref("ytm_inicio")),
+            ytm_start: panel::card_pref("ytm_inicio"),
             scale,
             f: make_fonts(scale),
             canvas: None,

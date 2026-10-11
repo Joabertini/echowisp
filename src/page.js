@@ -102,6 +102,7 @@
       title: ad ? '' : (m?.title ?? ''), artist: ad ? '' : (m?.artist ?? ''),
       paused: v?.paused ?? true, pos: v?.currentTime ?? 0, dur: (v?.duration > 0 && isFinite(v.duration)) ? v.duration : 0,
       logged: !!cfg('LOGGED_IN'), ad,
+      api: !!cfg('INNERTUBE_CONTEXT'), // la API interna ya responde (arranque diferido)
       vol: p?.getVolume?.() ?? Math.round((v?.volume ?? 1) * 100), muted: p?.isMuted?.() ?? v?.muted ?? false,
       repeat: document.querySelector('ytmusic-player-bar')?.getAttribute('repeat-mode') ?? 'NONE',
     };
@@ -111,7 +112,7 @@
   let last = '';
   const emit = (force) => {
     const s = state();
-    const key = `${s.title}|${s.artist}|${s.paused}|${Math.round(s.dur)}|${s.ad}|${s.repeat}|${s.logged}|${s.vol}|${s.muted}`;
+    const key = `${s.title}|${s.artist}|${s.paused}|${Math.round(s.dur)}|${s.ad}|${s.repeat}|${s.logged}|${s.vol}|${s.muted}|${s.api}`;
     if (!force && key === last) return;
     last = key;
     try { window.__ytmEvt?.(JSON.stringify(s)); } catch {}
