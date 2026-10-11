@@ -25,7 +25,8 @@ pub enum PHit {
     Close,
     Section(usize),
     Color(u8),
-    Style(u8), // 0 Instrumento, 1 Minimal
+    StyleMenu, // desplegable de temas
+    Style(u8), // indice en theme::Style::ALL
     AudioSw,
     Preset(u8, usize),
     Msg(&'static str),
@@ -191,9 +192,15 @@ impl App {
                 }
                 head(1, &mut y, &mut v);
                 if open(1) {
-                    row(PHit::Style(0), 12, PW / 2 - 3, y + 2, y + P_ROW - 2, &mut v);
-                    row(PHit::Style(1), PW / 2 + 3, PW - 12, y + 2, y + P_ROW - 2, &mut v);
-                    y += P_ROW + 4;
+                    row(PHit::StyleMenu, 12, PW - 12, y, y + P_ROW, &mut v);
+                    y += P_ROW;
+                    if self.style_menu {
+                        for k in 0..theme::Style::ALL.len() {
+                            row(PHit::Style(k as u8), 12, PW - 12, y, y + P_ROW, &mut v);
+                            y += P_ROW;
+                        }
+                    }
+                    y += 4;
                     row(PHit::Color(0), 12, PW - 12, y, y + P_ROW, &mut v);
                     y += P_ROW;
                     row(PHit::Preset(0, 0), 12, PW - 12, y, y + P_ROW, &mut v);
@@ -202,7 +209,7 @@ impl App {
                     y += P_ROW;
                     row(PHit::Preset(1, 0), 12, PW - 12, y, y + P_ROW, &mut v);
                     y += P_ROW;
-                    if th().style == theme::Style::Instrumento {
+                    if th().style != theme::Style::Minimal {
                         row(PHit::AudioSw, 12, PW - 12, y, y + P_ROW, &mut v);
                         y += P_ROW;
                     }
@@ -450,7 +457,7 @@ impl App {
             cv.fill_bg();
             let (wf, hf, s) = (w as f32, h as f32, self.scale);
             let tm = th();
-            let inst = tm.style == theme::Style::Instrumento;
+            let inst = tm.style != theme::Style::Minimal;
             let mut g = std::mem::take(&mut self.glows);
             skin::card(&mut cv, tm, wf, hf, RADIUS * s);
             let hov = self.panel_hover;
@@ -524,11 +531,11 @@ impl App {
                         };
                         if let Some(c) = c { cv.round(l, t, rr, b, self.pf(10.0), c); }
                     }
-                    PHit::Style(k) => {
-                        let sel = (k == 0) == inst;
-                        let st = skin::St { hover: if hov == hit { 1.0 } else { 0.0 }, active: sel, flash: 0.0 };
-                        skin::button(&mut cv, tm, &mut g, s, l, t, rr, b, if inst { 5.0 * s } else { self.pf(10.0) }, st);
+                    PHit::StyleMenu if inst => {
+                        let st = skin::St { hover: if hov == hit { 1.0 } else { 0.0 }, active: self.style_menu, flash: 0.0 };
+                        skin::button(&mut cv, tm, &mut g, s, l, t + 2.0 * s, rr, b - 2.0 * s, 5.0 * s, st);
                     }
+                    PHit::StyleMenu => cv.round(l, t + self.pf(2.0), rr, b - self.pf(2.0), self.pf(10.0), if hov == hit || self.style_menu { th().hover } else { th().tab }),
                     PHit::AudioSw => {
                         if hov == hit {
                             cv.round(l, t, rr, b, self.pf(8.0), th().hover);
@@ -581,13 +588,14 @@ impl App {
                         let (sl, st, sr, sb) = (rr - self.pf(42.0), t + self.pf(5.0), rr - self.pf(4.0), b - self.pf(5.0));
                         skin::switch(&mut cv, tm, &mut g, s, sl, st, sr, sb, on, skin::St::default());
                     }
-                    PHit::App(_) | PHit::Browser(_) | PHit::Hotkey(_) | PHit::Language(_) => {
+                    PHit::App(_) | PHit::Browser(_) | PHit::Hotkey(_) | PHit::Language(_) | PHit::Style(_) => {
                         if hov == hit || self.panel_capture.is_some_and(|c| hit == PHit::Hotkey(c)) {
                             cv.round(l, t, rr, b, self.pf(8.0), th().hover);
                         }
                         let sel = match hit {
                             PHit::Browser(i) => Some(self.browsers[i].1 == self.browser_cur),
                             PHit::Language(lang) => Some(i18n::current() == lang),
+                            PHit::Style(k) => Some(theme::Style::ALL[k as usize] == tm.style),
                             _ => None,
                         };
                         if let Some(sel) = sel {
@@ -704,10 +712,13 @@ impl App {
                         let c = if self.panel_capture == Some(i) { AMBER } else { th().dim };
                         cv.text(self.f.small, &combo, RECT { right: z.right - self.px(10), ..z }, c, DT_RIGHT);
                     }
-                    PHit::Style(k) => {
-                        let sel = (k == 0) == inst;
-                        cv.text(self.f.small, t(if k == 0 { "style_inst" } else { "style_min" }), z, if sel { th().ink } else { th().dim }, DT_CENTER);
+                    PHit::StyleMenu => {
+                        let pad = RECT { left: z.left + self.px(10), right: z.right - self.px(28), ..z };
+                        cv.text(self.f.small, t("style"), pad, th().dim, DT_LEFT);
+                        cv.text(self.f.small, t(th().style.label()), pad, th().ink, DT_RIGHT);
+                        cv.text(self.f.icon, if self.style_menu { "\u{E70E}" } else { "\u{E70D}" }, RECT { left: z.right - self.px(26), ..z }, th().dim, DT_CENTER);
                     }
+                    PHit::Style(k) => cv.text(self.f.small, t(theme::Style::ALL[k as usize].label()), inset, th().ink, DT_LEFT),
                     PHit::AudioSw => cv.text(self.f.small, t("audio_react"), RECT { left: z.left + self.px(10), ..z }, th().ink, DT_LEFT),
                     PHit::Language(lang) => cv.text(self.f.small, if lang == i18n::Lang::Es { t("spanish") } else { t("english") }, inset, th().ink, DT_LEFT),
                     _ => {}
@@ -739,9 +750,10 @@ impl App {
         let hit = self.panel_hit(x, y);
         match hit {
             PHit::Close => self.panel_close(),
+            PHit::StyleMenu => self.style_menu = !self.style_menu,
             PHit::Style(k) => {
                 let mut tm = self.theme_edit();
-                tm.style = if k == 0 { theme::Style::Instrumento } else { theme::Style::Minimal };
+                tm.style = theme::Style::ALL[k as usize];
                 self.glows.clear();
                 self.anims.finish_all();
                 theme::set(tm.clone());
@@ -1085,7 +1097,7 @@ mod tests {
 
     #[test]
     fn style_texts_exist_in_both_languages() {
-        for k in ["style", "style_inst", "style_min", "audio_react"] {
+        for k in ["style", "style_inst", "style_min", "style_fatuo", "audio_react"] {
             assert!(crate::i18n::TEXTS.iter().any(|(key, es, en)| *key == k && !es.is_empty() && !en.is_empty()), "{k}");
         }
     }

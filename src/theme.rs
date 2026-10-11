@@ -13,6 +13,29 @@ pub const OPACITY: f32 = 0.87;
 pub enum Style {
     Instrumento,
     Minimal,
+    Fatuo, // "fuego fatuo": el acento como fuente de luz
+}
+
+impl Style {
+    /// Orden del desplegable de temas.
+    pub const ALL: [Style; 3] = [Style::Instrumento, Style::Minimal, Style::Fatuo];
+
+    pub fn key(self) -> &'static str {
+        match self {
+            Style::Instrumento => "instrumento",
+            Style::Minimal => "minimal",
+            Style::Fatuo => "fatuo",
+        }
+    }
+
+    /// Clave de i18n con su nombre.
+    pub fn label(self) -> &'static str {
+        match self {
+            Style::Instrumento => "style_inst",
+            Style::Minimal => "style_min",
+            Style::Fatuo => "style_fatuo",
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -134,7 +157,7 @@ impl Theme {
         let d = Theme::default();
         let col = |k: &str, def: u32| v[k].as_str().and_then(parse_hex).unwrap_or(def);
         let mut t = Theme::new(col("fondo", d.bg), col("acento", d.accent));
-        t.style = if v["estilo"].as_str() == Some("minimal") { Style::Minimal } else { Style::Instrumento };
+        t.style = Style::ALL.into_iter().find(|s| v["estilo"].as_str() == Some(s.key())).unwrap_or(Style::Instrumento);
         t.audio = v["audio_reactivo"].as_bool().unwrap_or(false);
         t
     }
@@ -142,7 +165,7 @@ impl Theme {
     pub fn to_json(&self) -> Value {
         json!({
             "fondo": hex(self.bg), "acento": hex(self.accent),
-            "estilo": if self.style == Style::Minimal { "minimal" } else { "instrumento" },
+            "estilo": self.style.key(),
             "audio_reactivo": self.audio,
         })
     }
@@ -249,6 +272,16 @@ mod tests {
         assert_eq!(t.inset_a, 0.18);
         assert!(lum(t.well) < lum(t.bg) && lum(t.bg) - lum(t.well) < 0.1);
         assert!(lum(t.led_off) < lum(t.bg));
+    }
+
+    #[test]
+    fn fatuo_style_roundtrips() {
+        let mut t = Theme::new(rgb(0, 0, 0), rgb(0x63, 0x66, 0xf1));
+        t.style = Style::Fatuo;
+        assert_eq!(t.to_json()["estilo"], "fatuo");
+        assert_eq!(Theme::from_json(&t.to_json()).style, Style::Fatuo);
+        assert_eq!(Style::ALL.len(), 3);
+        assert_eq!(Style::ALL.iter().position(|&s| s == Style::Fatuo), Some(2));
     }
 
     #[test]

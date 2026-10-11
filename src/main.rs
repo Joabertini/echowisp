@@ -329,6 +329,22 @@ impl Canvas {
         }
     }
 
+    /// Circulo con luz: `hi` arriba a la izquierda, `lo` hacia el borde (el play de Fuego fatuo).
+    fn disc(&mut self, cx: f32, cy: f32, r: f32, hi: u32, lo: u32) {
+        let (w, h) = (self.w, self.h);
+        let (hx, hy) = (cx - 0.35 * r, cy - 0.4 * r);
+        let px = self.pixels();
+        for y in ((cy - r).floor() as i32).max(0)..((cy + r).ceil() as i32).min(h) {
+            for x in ((cx - r).floor() as i32).max(0)..((cx + r).ceil() as i32).min(w) {
+                let a = Self::cov(x, y, cx, cy, r, r, r);
+                if a > 0.0 {
+                    let d = ((x as f32 + 0.5 - hx).hypot(y as f32 + 0.5 - hy) / (1.6 * r)).clamp(0.0, 1.0);
+                    Self::blend(px, (y * w + x) as usize, theme::mix(hi, lo, d), a);
+                }
+            }
+        }
+    }
+
     /// Copia de la region [x0, x1) x [y0, y1) (recortada al lienzo), para repintar despues solo esa zona.
     fn patch(&mut self, x0: i32, y0: i32, x1: i32, y1: i32) -> Patch {
         let w = self.w;
@@ -559,6 +575,7 @@ struct App {
     panel_hover: PHit,
     panel_tracking: bool,
     panel_capture: Option<usize>, // atajo esperando combinacion nueva
+    style_menu: bool,             // desplegable de temas abierto
     browsers: Vec<(String, std::path::PathBuf)>,
     browser_cur: std::path::PathBuf,
     hotkeys: Vec<(i32, HOT_KEY_MODIFIERS, u32)>,
@@ -596,7 +613,7 @@ impl App {
 
     /// Si corren las animaciones: estilo Instrumento, card expandida y visible, y Windows con animaciones.
     fn motion(&self) -> bool {
-        th().style == theme::Style::Instrumento && !self.mini && unsafe { IsWindowVisible(self.hwnd) != 0 && sys_anim() }
+        th().style != theme::Style::Minimal && !self.mini && unsafe { IsWindowVisible(self.hwnd) != 0 && sys_anim() }
     }
 
     fn full_rect(&self) -> anim::Rect {
@@ -1430,7 +1447,8 @@ impl App {
         let s = self.scale;
         let wf = w as f32;
         let tm = th();
-        let inst = tm.style == theme::Style::Instrumento;
+        let inst = tm.style != theme::Style::Minimal; // Instrumento o Fuego fatuo (los dos pasan por skin)
+        let fatuo = tm.style == theme::Style::Fatuo;
         let mut g = std::mem::take(&mut self.glows);
 
         // Fondo: borde finito; en Instrumento, gradiente y linea de brillo arriba.
@@ -1486,7 +1504,26 @@ impl App {
 
         // Controles. Minimal: hover en circulo y play como boton blanco. Instrumento: teclas con relieve y
         // el play encendido con el acento.
-        if inst {
+        if fatuo {
+            // Fuego fatuo: iconos sueltos y el play como una luz, con su halo pegado al boton (nada flota).
+            for (k, hb) in [(-2, Hit::Shuffle), (-1, Hit::Prev), (1, Hit::Next), (2, Hit::Repeat)] {
+                let hv = self.hv(hb);
+                if hv > 0.0 {
+                    let c = self.pf(self.ctrl_center(k) as f32);
+                    let cy = self.pf((Y_CTRL + 20) as f32);
+                    cv.round_a(c - self.pf(17.0), cy - self.pf(17.0), c + self.pf(17.0), cy + self.pf(17.0), self.pf(17.0), tm.hover, hv);
+                }
+            }
+            let (pc, pcy) = (self.pf(self.ctrl_center(0) as f32), self.pf((Y_CTRL + 20) as f32));
+            let hv = self.hv(Hit::Play);
+            let fl = self.anims.value(anim::Key::Flash(hit_id(Hit::Play)), self.now_ms()).unwrap_or(0.0);
+            let pr = self.pf(18.0 + hv);
+            let d = (2.0 * pr).round();
+            let spr = g.get(d as i32, d as i32, d / 2.0, (12.0 * s).round() as i32);
+            cv.glow(spr, pc - d / 2.0, pcy - d / 2.0, tm.lit, tm.glow_a * (0.8 + 0.2 * hv + 0.4 * fl));
+            cv.disc(pc, pcy, pr, theme::mix(tm.lit, rgb(255, 255, 255), 0.72), tm.lit);
+            cv.opaque.push((pc, pcy, pr));
+        } else if inst {
             for hb in [Hit::Shuffle, Hit::Prev, Hit::Play, Hit::Next, Hit::Repeat] {
                 let z = self.zone(hb);
                 let fl = self.anims.value(anim::Key::Flash(hit_id(hb)), self.now_ms()).unwrap_or(0.0);
@@ -1689,13 +1726,14 @@ impl App {
 
         // ---- Texto ----
         let fade = if inst { self.anims.value(anim::Key::Title, self.now_ms()) } else { None };
+        let up = |s: &str| if fatuo { s.to_string() } else { s.to_uppercase() }; // Instrumento: titulo en mayusculas
         if let Some(v) = fade {
             // Cambio de cancion: el titulo viejo se desvanece y entra el nuevo.
-            cv.text(self.f.title, &self.prev_title.to_uppercase(), self.r(40, 8, W - 40, 28), theme::mix(tm.ink, tm.bg, v), DT_CENTER);
-            cv.text(self.f.title, &line1.to_uppercase(), self.r(40, 8, W - 40, 28), theme::mix(tm.bg, tm.ink, v), DT_CENTER);
+            cv.text(self.f.title, &up(&self.prev_title), self.r(40, 8, W - 40, 28), theme::mix(tm.ink, tm.bg, v), DT_CENTER);
+            cv.text(self.f.title, &up(line1), self.r(40, 8, W - 40, 28), theme::mix(tm.bg, tm.ink, v), DT_CENTER);
             cv.text(self.f.light, line2, self.r(40, 27, W - 40, 44), theme::mix(tm.bg, c2, v), DT_CENTER);
         } else if inst {
-            cv.text(self.f.title, &line1.to_uppercase(), self.r(40, 8, W - 40, 28), tm.ink, DT_CENTER);
+            cv.text(self.f.title, &up(line1), self.r(40, 8, W - 40, 28), tm.ink, DT_CENTER);
             cv.text(self.f.light, line2, self.r(40, 27, W - 40, 44), c2, DT_CENTER);
         } else {
             cv.text(self.f.title, line1, self.r(40, 8, W - 40, 28), th().ink, DT_CENTER);
@@ -1711,7 +1749,7 @@ impl App {
         let ic = |hb: Hit| if self.hover == hb { th().ink } else { th().dim };
         cv.text(self.f.icon, "\u{E8B1}", self.zone(Hit::Shuffle), ic(Hit::Shuffle), DT_CENTER);
         cv.text(self.f.icon_big, "\u{E892}", self.zone(Hit::Prev), ic(Hit::Prev), DT_CENTER);
-        cv.text(self.f.icon_big, if self.paused { "\u{E768}" } else { "\u{E769}" }, self.zone(Hit::Play), if inst { tm.lit } else { th().bg }, DT_CENTER);
+        cv.text(self.f.icon_big, if self.paused { "\u{E768}" } else { "\u{E769}" }, self.zone(Hit::Play), if fatuo { theme::mix(tm.lit, rgb(0, 0, 0), 0.78) } else if inst { tm.lit } else { th().bg }, DT_CENTER);
         cv.text(self.f.icon_big, "\u{E893}", self.zone(Hit::Next), ic(Hit::Next), DT_CENTER);
         let (rg, rc) = match self.repeat.as_str() {
             "ONE" => ("\u{E8ED}", th().accent),
@@ -1918,6 +1956,17 @@ unsafe fn make_fonts(scale: f32, style: theme::Style) -> Fonts {
             small: font(px(11.0), 400, "Bahnschrift"),
             light: font(px(12.0), 300, "Bahnschrift"),
             label: font(px(9.5), 400, "Bahnschrift"),
+            icon: font(px(13.0), 400, "Segoe MDL2 Assets"),
+            icon_big: font(px(15.0), 400, "Segoe MDL2 Assets"),
+        }
+    } else if style == theme::Style::Fatuo {
+        // Segoe UI, con el subtitulo en su peso liviano.
+        Fonts {
+            title: font(px(14.5), 600, "Segoe UI"),
+            text: font(px(13.0), 400, "Segoe UI"),
+            small: font(px(11.0), 400, "Segoe UI"),
+            light: font(px(12.0), 300, "Segoe UI"),
+            label: font(px(9.5), 600, "Segoe UI"),
             icon: font(px(13.0), 400, "Segoe MDL2 Assets"),
             icon_big: font(px(15.0), 400, "Segoe MDL2 Assets"),
         }
@@ -2316,6 +2365,7 @@ fn main() {
             panel_hover: PHit::None,
             panel_tracking: false,
             panel_capture: None,
+            style_menu: false,
             browsers: Vec::new(),
             browser_cur: brave::find_brave().unwrap_or_default(),
             hotkeys: panel::load_hotkeys(),
@@ -2389,6 +2439,18 @@ mod canvas_tests {
         cv.finish_rect(0.0, 10, 10, 20, 20);
         assert_eq!(at(&mut cv, 5, 5), 0x00ff_ffff); // fuera: sin alfa todavia
         assert!(at(&mut cv, 15, 15) >> 24 > 0); // dentro: alfa aplicado
+    }
+
+    #[test]
+    fn disc_is_round_and_lit_from_the_top_left() {
+        let mut cv = unsafe { Canvas::new(40, 40) };
+        cv.pixels().fill(0);
+        cv.disc(20.0, 20.0, 15.0, rgb(255, 255, 255), rgb(0, 0, 255));
+        assert_eq!(at(&mut cv, 1, 1), 0, "esquina afuera");
+        let hi = at(&mut cv, 15, 13) & 0xff00; // verde: solo viene del color claro
+        let lo = at(&mut cv, 28, 30) & 0xff00;
+        assert!(hi > lo, "arriba a la izquierda mas claro: {hi:x} vs {lo:x}");
+        assert!(at(&mut cv, 20, 34) & 0xff >= 0xf0, "borde de abajo azul");
     }
 
     #[test]

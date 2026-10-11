@@ -35,9 +35,10 @@ pub fn set(lang: Lang) { LANG.store(if lang == Lang::Es { 1 } else { 2 }, Orderi
 // Key, Spanish, English. Keep English short: the cards have fixed widths.
 pub const TEXTS: &[(&str, &str, &str)] = &[
     ("no_music", "Nada sonando", "Nothing playing"),
-    ("style", "Estilo", "Style"),
+    ("style", "Tema", "Theme"),
     ("style_inst", "Instrumento", "Instrument"),
     ("style_min", "Minimal", "Minimal"),
+    ("style_fatuo", "Fuego fatuo", "Will-o'-wisp"),
     ("audio_react", "Reacción al audio", "Audio reactive"),
     ("search_lists", "Buscá o abrí tus listas", "Search or open playlists"),
     ("no_session", "Sin sesión · tocá el ícono", "Sign in · tap the icon"),
