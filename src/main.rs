@@ -187,25 +187,111 @@ impl Canvas {
         self.pixels().fill(theme::px(th().bg));
     }
 
-    /// Rectangulo redondeado (o circulo si rad = mitad del lado) con borde suavizado.
-    fn round(&mut self, l: f32, t: f32, r: f32, b: f32, rad: f32, c: u32) {
+    /// Cobertura antialias de un rectangulo redondeado en el pixel (x, y).
+    fn cov(x: i32, y: i32, cx: f32, cy: f32, hw: f32, hh: f32, rad: f32) -> f32 {
+        // Distancia con signo: adentro es negativa, asi un rectangulo de radio 0 tambien cubre del todo.
+        let qx = (x as f32 + 0.5 - cx).abs() - (hw - rad);
+        let qy = (y as f32 + 0.5 - cy).abs() - (hh - rad);
+        let d = (qx.max(0.0).powi(2) + qy.max(0.0).powi(2)).sqrt() + qx.max(qy).min(0.0) - rad;
+        (0.5 - d).clamp(0.0, 1.0)
+    }
+
+    /// Mezcla el color `c` (COLORREF) sobre el pixel i con opacidad `a`.
+    fn blend(px: &mut [u32], i: usize, c: u32, a: f32) {
+        let p = px[i];
+        let m = |o: u32, n: u32| (o as f32 + (n as f32 - o as f32) * a) as u32;
+        px[i] = m((p >> 16) & 0xff, c & 0xff) << 16 | m((p >> 8) & 0xff, (c >> 8) & 0xff) << 8 | m(p & 0xff, (c >> 16) & 0xff);
+    }
+
+    /// Rectangulo redondeado (o circulo si rad = mitad del lado) con borde suavizado y opacidad `alpha`.
+    fn round_a(&mut self, l: f32, t: f32, r: f32, b: f32, rad: f32, c: u32, alpha: f32) {
         let (w, h) = (self.w, self.h);
-        let (cr, cg, cb) = ((c & 0xff) as f32, ((c >> 8) & 0xff) as f32, ((c >> 16) & 0xff) as f32);
         let (cx, cy, hw, hh) = ((l + r) / 2.0, (t + b) / 2.0, (r - l) / 2.0, (b - t) / 2.0);
         let px = self.pixels();
         for y in (t.floor() as i32).max(0)..(b.ceil() as i32).min(h) {
             for x in (l.floor() as i32).max(0)..(r.ceil() as i32).min(w) {
-                let qx = ((x as f32 + 0.5 - cx).abs() - (hw - rad)).max(0.0);
-                let qy = ((y as f32 + 0.5 - cy).abs() - (hh - rad)).max(0.0);
-                let cov = (0.5 - ((qx * qx + qy * qy).sqrt() - rad)).clamp(0.0, 1.0);
-                if cov <= 0.0 {
+                let k = Self::cov(x, y, cx, cy, hw, hh, rad) * alpha;
+                if k > 0.0 {
+                    Self::blend(px, (y * w + x) as usize, c, k);
+                }
+            }
+        }
+    }
+
+    /// Rectangulo redondeado opaco.
+    fn round(&mut self, l: f32, t: f32, r: f32, b: f32, rad: f32, c: u32) {
+        self.round_a(l, t, r, b, rad, c, 1.0);
+    }
+
+    /// Rectangulo redondeado con gradiente vertical de `top` a `bottom`.
+    fn vgrad(&mut self, l: f32, t: f32, r: f32, b: f32, rad: f32, top: u32, bottom: u32) {
+        let (w, h) = (self.w, self.h);
+        let (cx, cy, hw, hh) = ((l + r) / 2.0, (t + b) / 2.0, (r - l) / 2.0, (b - t) / 2.0);
+        let px = self.pixels();
+        for y in (t.floor() as i32).max(0)..(b.ceil() as i32).min(h) {
+            let c = theme::mix(top, bottom, ((y as f32 + 0.5 - t) / (b - t)).clamp(0.0, 1.0));
+            for x in (l.floor() as i32).max(0)..(r.ceil() as i32).min(w) {
+                let k = Self::cov(x, y, cx, cy, hw, hh, rad);
+                if k > 0.0 {
+                    Self::blend(px, (y * w + x) as usize, c, k);
+                }
+            }
+        }
+    }
+
+    /// Borde de ancho `width` de un rectangulo redondeado.
+    fn ring(&mut self, l: f32, t: f32, r: f32, b: f32, rad: f32, width: f32, c: u32, alpha: f32) {
+        let (w, h) = (self.w, self.h);
+        let (cx, cy, hw, hh) = ((l + r) / 2.0, (t + b) / 2.0, (r - l) / 2.0, (b - t) / 2.0);
+        let px = self.pixels();
+        for y in (t.floor() as i32).max(0)..(b.ceil() as i32).min(h) {
+            for x in (l.floor() as i32).max(0)..(r.ceil() as i32).min(w) {
+                let out = Self::cov(x, y, cx, cy, hw, hh, rad);
+                let inn = Self::cov(x, y, cx, cy, hw - width, hh - width, (rad - width).max(0.0));
+                let k = (out - inn).max(0.0) * alpha;
+                if k > 0.0 {
+                    Self::blend(px, (y * w + x) as usize, c, k);
+                }
+            }
+        }
+    }
+
+    /// Copia un sprite de brillo con el color `c`; (l, t) es la esquina del rectangulo que brilla.
+    fn glow(&mut self, s: &glow::Sprite, l: f32, t: f32, c: u32, alpha: f32) {
+        let (w, h) = (self.w, self.h);
+        let (ox, oy) = (l.round() as i32 - s.pad, t.round() as i32 - s.pad);
+        let px = self.pixels();
+        for sy in 0..s.h {
+            let y = oy + sy;
+            if y < 0 || y >= h {
+                continue;
+            }
+            for sx in 0..s.w {
+                let x = ox + sx;
+                if x < 0 || x >= w {
                     continue;
                 }
-                let i = (y * w + x) as usize;
-                let p = px[i];
-                let mix = |o: u32, n: f32| (o as f32 + (n - o as f32) * cov) as u32;
-                px[i] = mix((p >> 16) & 0xff, cr) << 16 | mix((p >> 8) & 0xff, cg) << 8 | mix(p & 0xff, cb);
+                let k = s.a[(sy * s.w + sx) as usize] * alpha;
+                if k > 0.004 {
+                    Self::blend(px, (y * w + x) as usize, c, k);
+                }
             }
+        }
+    }
+
+    /// Copia del lienzo antes de terminarlo (para repintar despues solo una region).
+    fn snapshot(&mut self) -> Vec<u32> {
+        self.pixels().to_vec()
+    }
+
+    /// Vuelve una region al estado de `base`.
+    fn restore(&mut self, base: &[u32], x0: i32, y0: i32, x1: i32, y1: i32) {
+        let w = self.w;
+        let (x0, y0, x1, y1) = (x0.max(0), y0.max(0), x1.min(self.w), y1.min(self.h));
+        let px = self.pixels();
+        for y in y0..y1 {
+            let (a, b) = ((y * w + x0) as usize, (y * w + x1) as usize);
+            px[a..b].copy_from_slice(&base[a..b]);
         }
     }
 
@@ -218,15 +304,19 @@ impl Canvas {
     /// lo de atras (theme::OPACITY); el boton de play queda opaco para que no pierda contraste.
     fn finish(&mut self, rad: f32) {
         let (w, h) = (self.w, self.h);
-        let opaque = std::mem::take(&mut self.opaque);
+        self.finish_rect(rad, 0, 0, w, h);
+    }
+
+    /// Como `finish`, pero solo en la region [x0, x1) x [y0, y1) (para repintar un LED sin tocar el resto).
+    fn finish_rect(&mut self, rad: f32, x0: i32, y0: i32, x1: i32, y1: i32) {
+        let (w, h) = (self.w, self.h);
+        let opaque = self.opaque.clone();
         let (cx, cy, hw, hh) = (w as f32 / 2.0, h as f32 / 2.0, w as f32 / 2.0, h as f32 / 2.0);
         let px = self.pixels();
-        for y in 0..h {
-            for x in 0..w {
+        for y in y0.max(0)..y1.min(h) {
+            for x in x0.max(0)..x1.min(w) {
                 let i = (y * w + x) as usize;
-                let qx = ((x as f32 + 0.5 - cx).abs() - (hw - rad)).max(0.0);
-                let qy = ((y as f32 + 0.5 - cy).abs() - (hh - rad)).max(0.0);
-                let mut a = (0.5 - ((qx * qx + qy * qy).sqrt() - rad)).clamp(0.0, 1.0);
+                let mut a = Self::cov(x, y, cx, cy, hw, hh, rad);
                 let p = px[i] & 0xffffff;
                 if a > 0.0 && !opaque.iter().any(|&(ox, oy, r)| (x as f32 + 0.5 - ox).powi(2) + (y as f32 + 0.5 - oy).powi(2) <= r * r) {
                     a *= theme::OPACITY;
@@ -1826,5 +1916,70 @@ fn main() {
             TranslateMessage(&m);
             DispatchMessageW(&m);
         }
+    }
+}
+
+#[cfg(test)]
+mod canvas_tests {
+    use super::*;
+
+    fn at(cv: &mut Canvas, x: i32, y: i32) -> u32 {
+        let w = cv.w;
+        cv.pixels()[(y * w + x) as usize]
+    }
+
+    #[test]
+    fn round_a_half_blends() {
+        let mut cv = unsafe { Canvas::new(20, 20) };
+        cv.pixels().fill(0);
+        cv.round_a(0.0, 0.0, 20.0, 20.0, 0.0, rgb(200, 0, 0), 0.5);
+        assert_eq!(at(&mut cv, 10, 10) >> 16 & 0xff, 100);
+    }
+
+    #[test]
+    fn ring_leaves_center_untouched() {
+        let mut cv = unsafe { Canvas::new(20, 20) };
+        cv.pixels().fill(0);
+        cv.ring(0.0, 0.0, 20.0, 20.0, 4.0, 1.0, rgb(255, 255, 255), 1.0);
+        assert_eq!(at(&mut cv, 10, 10), 0);
+        assert!(at(&mut cv, 10, 0) & 0xff > 200);
+    }
+
+    #[test]
+    fn vgrad_goes_top_to_bottom() {
+        let mut cv = unsafe { Canvas::new(10, 10) };
+        cv.vgrad(0.0, 0.0, 10.0, 10.0, 0.0, rgb(200, 200, 200), rgb(0, 0, 0));
+        assert!(at(&mut cv, 5, 0) & 0xff > at(&mut cv, 5, 9) & 0xff);
+    }
+
+    #[test]
+    fn finish_rect_only_touches_region() {
+        let mut cv = unsafe { Canvas::new(30, 30) };
+        cv.pixels().fill(0x00ff_ffff);
+        cv.finish_rect(0.0, 10, 10, 20, 20);
+        assert_eq!(at(&mut cv, 5, 5), 0x00ff_ffff); // fuera: sin alfa todavia
+        assert!(at(&mut cv, 15, 15) >> 24 > 0); // dentro: alfa aplicado
+    }
+
+    #[test]
+    fn finish_rect_full_equals_finish() {
+        let mut a = unsafe { Canvas::new(24, 24) };
+        let mut b = unsafe { Canvas::new(24, 24) };
+        a.pixels().fill(0x0012_3456);
+        b.pixels().fill(0x0012_3456);
+        a.finish(6.0);
+        b.finish_rect(6.0, 0, 0, 24, 24);
+        assert_eq!(a.pixels().to_vec(), b.pixels().to_vec());
+    }
+
+    #[test]
+    fn glow_blends_sprite_around_rect() {
+        let mut cv = unsafe { Canvas::new(30, 30) };
+        cv.pixels().fill(0);
+        let s = glow::rr_glow(10, 10, 2.0, 5);
+        cv.glow(&s, 10.0, 10.0, rgb(255, 255, 255), 1.0);
+        assert!(at(&mut cv, 15, 15) & 0xff > 150); // centro del rect
+        assert!(at(&mut cv, 8, 15) & 0xff > 0); // halo afuera del rect
+        assert_eq!(at(&mut cv, 0, 0), 0); // lejos: nada
     }
 }

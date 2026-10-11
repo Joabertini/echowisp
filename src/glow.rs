@@ -14,9 +14,11 @@ pub fn rr_glow(w: i32, h: i32, rad: f32, pad: i32) -> Sprite {
     let (cx, cy, hw, hh) = (sw as f32 / 2.0, sh as f32 / 2.0, w as f32 / 2.0, h as f32 / 2.0);
     for y in 0..sh {
         for x in 0..sw {
-            let qx = ((x as f32 + 0.5 - cx).abs() - (hw - rad)).max(0.0);
-            let qy = ((y as f32 + 0.5 - cy).abs() - (hh - rad)).max(0.0);
-            a[(y * sw + x) as usize] = (0.5 - ((qx * qx + qy * qy).sqrt() - rad)).clamp(0.0, 1.0);
+            // Distancia con signo (adentro negativa): con radio 0 el interior cubre del todo.
+            let qx = (x as f32 + 0.5 - cx).abs() - (hw - rad);
+            let qy = (y as f32 + 0.5 - cy).abs() - (hh - rad);
+            let d = (qx.max(0.0).powi(2) + qy.max(0.0).powi(2)).sqrt() + qx.max(qy).min(0.0) - rad;
+            a[(y * sw + x) as usize] = (0.5 - d).clamp(0.0, 1.0);
         }
     }
     let r = (pad / 2).max(1);
@@ -102,6 +104,12 @@ mod tests {
         assert!(at(11, 11) > 0.6);
         assert!(at(0, 0) < 0.02);
         assert!((at(3, 11) - at(18, 11)).abs() < 1e-3); // simetrico
+    }
+
+    #[test]
+    fn square_corners_fill_center() {
+        let s = rr_glow(10, 10, 0.0, 4);
+        assert!(s.a[(s.h / 2 * s.w + s.w / 2) as usize] > 0.8);
     }
 
     #[test]
