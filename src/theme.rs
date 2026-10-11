@@ -9,6 +9,12 @@ use windows_sys::Win32::{Foundation::HWND, Graphics::Gdi::*};
 /// Cuanto tapa la card (0.87 = se transparenta un 13 %, justo para sentir el vidrio sin perder letras).
 pub const OPACITY: f32 = 0.87;
 
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum Style {
+    Instrumento,
+    Minimal,
+}
+
 #[derive(Clone)]
 pub struct Theme {
     pub accent: u32, // COLORREF (0x00BBGGRR), como el resto de los colores
@@ -21,6 +27,15 @@ pub struct Theme {
     pub ink: u32,
     pub dim: u32,
     pub dim3: u32,
+    pub style: Style,
+    pub audio: bool, // reaccion al audio (vumetro), apagada por defecto
+    // derivados del estilo Instrumento
+    pub light: bool,
+    pub well: u32,    // zonas hundidas
+    pub led_off: u32, // LEDs y segmentos apagados
+    pub top: u32,     // arriba del gradiente de la card
+    pub glow_a: f32,  // intensidad del brillo del acento
+    pub inset_a: f32, // sombra interior de los hundidos
 }
 
 fn ch(c: u32) -> (f32, f32, f32) {
@@ -66,7 +81,10 @@ impl Theme {
     }
 
     pub fn new(bg: u32, accent: u32) -> Theme {
-        let mut t = Theme { accent, bg, card: 0, tab: 0, hover: 0, hairline: 0, ink: 0, dim: 0, dim3: 0 };
+        let mut t = Theme {
+            accent, bg, card: 0, tab: 0, hover: 0, hairline: 0, ink: 0, dim: 0, dim3: 0,
+            style: Style::Instrumento, audio: false, light: false, well: 0, led_off: 0, top: 0, glow_a: 0.0, inset_a: 0.0,
+        };
         t.derive();
         t
     }
@@ -81,19 +99,39 @@ impl Theme {
         self.hairline = mix(b, self.ink, 0.112);
         self.dim = mix(b, self.ink, 0.60);
         self.dim3 = mix(b, self.ink, 0.44);
+        self.light = lum(b) > 0.6;
+        self.well = if self.light { mix(b, self.ink, 0.05) } else { mix(b, rgb(0, 0, 0), 0.35) };
+        self.led_off = mix(b, self.ink, 0.14);
+        self.top = mix(b, self.ink, 0.09);
+        self.glow_a = if self.light { 0.35 } else { 0.70 };
+        self.inset_a = if self.light { 0.18 } else { 0.60 };
+    }
+
+    pub fn from_json(v: &Value) -> Theme {
+        let d = Theme::default();
+        let col = |k: &str, def: u32| v[k].as_str().and_then(parse_hex).unwrap_or(def);
+        let mut t = Theme::new(col("fondo", d.bg), col("acento", d.accent));
+        t.style = if v["estilo"].as_str() == Some("minimal") { Style::Minimal } else { Style::Instrumento };
+        t.audio = v["audio_reactivo"].as_bool().unwrap_or(false);
+        t
+    }
+
+    pub fn to_json(&self) -> Value {
+        json!({
+            "fondo": hex(self.bg), "acento": hex(self.accent),
+            "estilo": if self.style == Style::Minimal { "minimal" } else { "instrumento" },
+            "audio_reactivo": self.audio,
+        })
     }
 
     pub fn load() -> Theme {
         let v: Value = std::fs::read_to_string(brave::data_dir().join("theme.json")).ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or(json!({}));
-        let d = Theme::default();
-        let col = |k: &str, def: u32| v[k].as_str().and_then(parse_hex).unwrap_or(def);
-        Theme::new(col("fondo", d.bg), col("acento", d.accent))
+        Theme::from_json(&v)
     }
 
     pub fn save(&self) {
-        let v = json!({ "fondo": hex(self.bg), "acento": hex(self.accent) });
         let _ = std::fs::create_dir_all(brave::data_dir());
-        let _ = std::fs::write(brave::data_dir().join("theme.json"), v.to_string());
+        let _ = std::fs::write(brave::data_dir().join("theme.json"), self.to_json().to_string());
     }
 }
 
@@ -149,5 +187,45 @@ pub unsafe fn blur(hwnd: HWND, cache: &mut BlurCache, w: i32, full_w: i32, x0: i
         let mut ap = AccentPolicy { state: 3, flags: 0, color: 0, anim: 0 };
         let mut d = CompAttr { attrib: 19, data: (&mut ap as *mut AccentPolicy).cast(), size: std::mem::size_of::<AccentPolicy>() };
         f(hwnd, &mut d);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn dark_theme_tokens() {
+        let t = Theme::new(rgb(0x1f, 0x1f, 0x22), rgb(0xf9, 0x73, 0x16));
+        assert!(!t.light);
+        assert_eq!(t.glow_a, 0.70);
+        assert_eq!(t.inset_a, 0.60);
+        assert!(lum(t.well) < lum(t.bg));
+        assert!(lum(t.led_off) > lum(t.bg) && lum(t.led_off) < lum(t.ink));
+        assert!(lum(t.top) > lum(t.bg));
+    }
+
+    #[test]
+    fn light_theme_tokens() {
+        let t = Theme::new(rgb(0xf4, 0xf1, 0xea), rgb(0x8b, 0x5c, 0xf6));
+        assert!(t.light);
+        assert_eq!(t.glow_a, 0.35);
+        assert_eq!(t.inset_a, 0.18);
+        assert!(lum(t.well) < lum(t.bg) && lum(t.bg) - lum(t.well) < 0.1);
+        assert!(lum(t.led_off) < lum(t.bg));
+    }
+
+    #[test]
+    fn json_roundtrip_and_defaults() {
+        let d = Theme::from_json(&json!({}));
+        assert_eq!(d.style, Style::Instrumento);
+        assert!(!d.audio);
+        let mut t = Theme::new(rgb(0, 0, 0), rgb(0x63, 0x66, 0xf1));
+        t.style = Style::Minimal;
+        t.audio = true;
+        let back = Theme::from_json(&t.to_json());
+        assert_eq!(back.style, Style::Minimal);
+        assert!(back.audio);
+        assert_eq!(back.accent, t.accent);
     }
 }
