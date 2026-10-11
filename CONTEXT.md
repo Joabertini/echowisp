@@ -60,6 +60,13 @@ It runs with the user's Brave closed. Priorities: minimal resource use and respo
   internet mark: SmartScreen does not block it), verifies SHA-256 (BCrypt), runs it with
   `/VERYSILENT /RELANZAR=1 /NAVEGADOR=<actual>` after ~2 s (cmd + ping: the card must close first because
   of AppMutex), and the installer reopens the card. **When publishing a version: upload the exe and update version.json.**
+- **YouTube Music on demand** (0.6.x, PR #18): setting "YouTube Music on open" (`card.json` → `ytm_inicio`, on by
+  default). Off: `engine::start(hwnd, false)` leaves the engine idle (no Brave; card ~3 MB) and the card shows
+  "YouTube Music · Off · click to start". The first YouTube Music action (search, play, lists, hotkeys, clicking the
+  title) calls `wake`; actions wait in a queue (max 8) until `page.js` reports `api: true` (`INNERTUBE_CONTEXT`
+  loaded). Flushing on the first state gave `search HTTP 400`. Volume and seek never wake it. "Close YouTube Music"
+  (`stop`) closes Brave like on exit; `Ev::Asleep` clears the card. Logs: `motor diferido`, `motor iniciado por <x>`,
+  `motor cerrado a pedido`.
 - Brave Origin discarded: on Windows it is paid (purchase window). Fallback: Edge.
 - DevTools HTTP rejects HTTP/1.0 and does not close the connection → HTTP/1.1 + Content-Length.
 - `DrawTextW` with an empty string crashes (empty Vec pointer) → skip it.
