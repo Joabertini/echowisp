@@ -5,6 +5,7 @@ mod brave;
 mod bridge;
 mod cdp;
 mod engine;
+mod glow;
 mod i18n;
 mod panel;
 mod report;
