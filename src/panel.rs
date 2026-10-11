@@ -25,6 +25,8 @@ pub enum PHit {
     Close,
     Section(usize),
     Color(u8),
+    Style(u8), // 0 Instrumento, 1 Minimal
+    AudioSw,
     Preset(u8, usize),
     Msg(&'static str),
     MixError,
@@ -189,6 +191,9 @@ impl App {
                 }
                 head(1, &mut y, &mut v);
                 if open(1) {
+                    row(PHit::Style(0), 12, PW / 2 - 3, y + 2, y + P_ROW - 2, &mut v);
+                    row(PHit::Style(1), PW / 2 + 3, PW - 12, y + 2, y + P_ROW - 2, &mut v);
+                    y += P_ROW + 4;
                     row(PHit::Color(0), 12, PW - 12, y, y + P_ROW, &mut v);
                     y += P_ROW;
                     row(PHit::Preset(0, 0), 12, PW - 12, y, y + P_ROW, &mut v);
@@ -197,6 +202,10 @@ impl App {
                     y += P_ROW;
                     row(PHit::Preset(1, 0), 12, PW - 12, y, y + P_ROW, &mut v);
                     y += P_ROW;
+                    if th().style == theme::Style::Instrumento {
+                        row(PHit::AudioSw, 12, PW - 12, y, y + P_ROW, &mut v);
+                        y += P_ROW;
+                    }
                 }
                 if self.br.is_some() {
                     head(2, &mut y, &mut v);
@@ -440,8 +449,10 @@ impl App {
             let mut cv = self.panel_canvas.take().unwrap();
             cv.fill_bg();
             let (wf, hf, s) = (w as f32, h as f32, self.scale);
-            cv.round(0.0, 0.0, wf, hf, RADIUS * s, th().hairline);
-            cv.round(1.0, 1.0, wf - 1.0, hf - 1.0, RADIUS * s - 1.0, th().bg);
+            let tm = th();
+            let inst = tm.style == theme::Style::Instrumento;
+            let mut g = std::mem::take(&mut self.glows);
+            skin::card(&mut cv, tm, wf, hf, RADIUS * s);
             let hov = self.panel_hover;
             if hov == PHit::Close {
                 let z = self.r(PW - 36, 4, PW - 8, 32);
@@ -454,9 +465,14 @@ impl App {
                 match hit {
                     PHit::Sw(i) => {
                         let on = self.mix_apps[i].on;
-                        cv.round(l, t, rr, b, (b - t) / 2.0, if on { GREEN } else { th().hover });
-                        let k = (b - t) / 2.0 - self.pf(2.5);
-                        cv.dot(if on { rr - (b - t) / 2.0 } else { l + (b - t) / 2.0 }, (t + b) / 2.0, k, th().ink);
+                        skin::switch(&mut cv, tm, &mut g, s, l, t, rr, b, on, skin::St { hover: if hov == hit { 1.0 } else { 0.0 }, ..Default::default() });
+                    }
+                    PHit::Vol(i) if inst => {
+                        let y = (t + b) / 2.0;
+                        let f = (self.mix_apps[i].vol / 100.0) as f32;
+                        skin::segments(&mut cv, tm, &mut g, s, l, y - 2.0 * s, rr, y + 2.0 * s, 10, f * 10.0, tm.accent, 1.0);
+                        let x = l + (rr - l) * f;
+                        cv.round(x - 1.5 * s, y - 6.0 * s, x + 1.5 * s, y + 6.0 * s, 1.0, tm.ink);
                     }
                     PHit::Vol(i) => {
                         let y = (t + b) / 2.0;
@@ -508,7 +524,29 @@ impl App {
                         };
                         if let Some(c) = c { cv.round(l, t, rr, b, self.pf(10.0), c); }
                     }
+                    PHit::Style(k) => {
+                        let sel = (k == 0) == inst;
+                        let st = skin::St { hover: if hov == hit { 1.0 } else { 0.0 }, active: sel, flash: 0.0 };
+                        skin::button(&mut cv, tm, &mut g, s, l, t, rr, b, if inst { 5.0 * s } else { self.pf(10.0) }, st);
+                    }
+                    PHit::AudioSw => {
+                        if hov == hit {
+                            cv.round(l, t, rr, b, self.pf(8.0), th().hover);
+                        }
+                        let (sl, st, sr, sb) = (rr - self.pf(42.0), t + self.pf(5.0), rr - self.pf(4.0), b - self.pf(5.0));
+                        skin::switch(&mut cv, tm, &mut g, s, sl, st, sr, sb, tm.audio, skin::St::default());
+                    }
+                    PHit::Token | PHit::Invite | PHit::Unlink | PHit::Report | PHit::YtmStop if inst => {
+                        skin::button(&mut cv, tm, &mut g, s, l, t, rr, b, 5.0 * s, skin::St { hover: if hov == hit { 1.0 } else { 0.0 }, ..Default::default() });
+                    }
                     PHit::Token | PHit::Invite | PHit::Unlink | PHit::Report | PHit::YtmStop => cv.round(l, t, rr, b, self.pf(10.0), if hov == hit { th().accent } else { th().tab }),
+                    PHit::RText | PHit::RContact if inst => {
+                        let f = if hit == PHit::RText { report::Field::Text } else { report::Field::Contact };
+                        skin::well(&mut cv, tm, l, t, rr, b, 7.0 * s);
+                        if self.rep.focus == Some(f) {
+                            cv.ring(l, t, rr, b, 7.0 * s, 1.0, tm.accent, 0.8);
+                        }
+                    }
                     PHit::RText | PHit::RContact => {
                         let f = if hit == PHit::RText { report::Field::Text } else { report::Field::Contact };
                         let focus = self.rep.focus == Some(f);
@@ -521,9 +559,11 @@ impl App {
                         }
                         let on = self.rep.attach;
                         let (sl, st, sr, sb) = (rr - self.pf(42.0), t + self.pf(5.0), rr - self.pf(4.0), b - self.pf(5.0));
-                        cv.round(sl, st, sr, sb, (sb - st) / 2.0, if on { GREEN } else { th().hover });
-                        let k = (sb - st) / 2.0 - self.pf(2.5);
-                        cv.dot(if on { sr - (sb - st) / 2.0 } else { sl + (sb - st) / 2.0 }, (st + sb) / 2.0, k, th().ink);
+                        skin::switch(&mut cv, tm, &mut g, s, sl, st, sr, sb, on, skin::St::default());
+                    }
+                    PHit::RSend if inst => {
+                        let st = skin::St { hover: if hov == hit { 1.0 } else { 0.0 }, active: self.rep.ready(), flash: 0.0 };
+                        skin::button(&mut cv, tm, &mut g, s, l, t, rr, b, 5.0 * s, st);
                     }
                     PHit::RSend => {
                         let c = if !self.rep.ready() { th().hover } else if hov == hit { th().accent } else { th().tab };
@@ -539,9 +579,7 @@ impl App {
                             _ => self.ytm_start,
                         };
                         let (sl, st, sr, sb) = (rr - self.pf(42.0), t + self.pf(5.0), rr - self.pf(4.0), b - self.pf(5.0));
-                        cv.round(sl, st, sr, sb, (sb - st) / 2.0, if on { GREEN } else { th().hover });
-                        let k = (sb - st) / 2.0 - self.pf(2.5);
-                        cv.dot(if on { sr - (sb - st) / 2.0 } else { sl + (sb - st) / 2.0 }, (st + sb) / 2.0, k, th().ink);
+                        skin::switch(&mut cv, tm, &mut g, s, sl, st, sr, sb, on, skin::St::default());
                     }
                     PHit::App(_) | PHit::Browser(_) | PHit::Hotkey(_) | PHit::Language(_) => {
                         if hov == hit || self.panel_capture.is_some_and(|c| hit == PHit::Hotkey(c)) {
@@ -666,12 +704,18 @@ impl App {
                         let c = if self.panel_capture == Some(i) { AMBER } else { th().dim };
                         cv.text(self.f.small, &combo, RECT { right: z.right - self.px(10), ..z }, c, DT_RIGHT);
                     }
+                    PHit::Style(k) => {
+                        let sel = (k == 0) == inst;
+                        cv.text(self.f.small, t(if k == 0 { "style_inst" } else { "style_min" }), z, if sel { th().ink } else { th().dim }, DT_CENTER);
+                    }
+                    PHit::AudioSw => cv.text(self.f.small, t("audio_react"), RECT { left: z.left + self.px(10), ..z }, th().ink, DT_LEFT),
                     PHit::Language(lang) => cv.text(self.f.small, if lang == i18n::Lang::Es { t("spanish") } else { t("english") }, inset, th().ink, DT_LEFT),
                     _ => {}
                 }
             }
             GdiFlush();
             cv.finish(RADIUS * s);
+            self.glows = g;
             self.panel_canvas = Some(cv);
         }
         self.panel_present();
@@ -695,6 +739,20 @@ impl App {
         let hit = self.panel_hit(x, y);
         match hit {
             PHit::Close => self.panel_close(),
+            PHit::Style(k) => {
+                let mut tm = self.theme_edit();
+                tm.style = if k == 0 { theme::Style::Instrumento } else { theme::Style::Minimal };
+                self.glows.clear();
+                self.anims.finish_all();
+                theme::set(tm.clone());
+                unsafe { self.fonts_reset() };
+                self.theme_apply(tm, true);
+            }
+            PHit::AudioSw => {
+                let mut tm = self.theme_edit();
+                tm.audio = !tm.audio;
+                self.theme_apply(tm, true);
+            }
             PHit::App(i) => {
                 let pid = self.mix_apps[i].pid;
                 self.mix_sel = if self.mix_sel == Some(pid) { None } else { Some(pid) };
@@ -1024,6 +1082,13 @@ pub unsafe fn create(owner: HWND, hinst: HINSTANCE) -> HWND {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn style_texts_exist_in_both_languages() {
+        for k in ["style", "style_inst", "style_min", "audio_react"] {
+            assert!(crate::i18n::TEXTS.iter().any(|(key, es, en)| *key == k && !es.is_empty() && !en.is_empty()), "{k}");
+        }
+    }
 
     #[test]
     fn ytm_on_open_defaults_on() {
