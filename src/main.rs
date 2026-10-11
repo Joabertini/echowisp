@@ -1,6 +1,7 @@
 #![windows_subsystem = "windows"]
 // Widget flotante de estetica oscura: ventana en capas (alfa por pixel, esquinas
 // suavizadas), formas dibujadas a mano sobre un DIB y texto con GDI. Sin frameworks.
+mod anim;
 mod brave;
 mod bridge;
 mod cdp;
