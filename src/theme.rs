@@ -59,7 +59,7 @@ pub struct Theme {
     pub top: u32,     // arriba del gradiente de la card
     pub glow_a: f32,  // intensidad del brillo del acento
     pub inset_a: f32, // sombra interior de los hundidos
-    pub lit: u32,     // acento para glifos, LEDs y segmentos: en fondos claros se oscurece hasta contrastar 3:1
+    pub lit: u32,     // acento para glifos, LEDs, segmentos y filos: se acerca al texto hasta contrastar 3:1
 }
 
 fn ch(c: u32) -> (f32, f32, f32) {
@@ -143,13 +143,12 @@ impl Theme {
         self.top = mix(b, self.ink, 0.09);
         self.glow_a = if self.light { 0.35 } else { 0.70 };
         self.inset_a = if self.light { 0.18 } else { 0.60 };
+        // Hacia el texto (oscuro en fondos claros, claro en oscuros) hasta contrastar 3:1.
         self.lit = self.accent;
-        if self.light {
-            let mut k = 0.0;
-            while k < 1.0 && (contrast(self.lit, self.tab) < 3.0 || contrast(self.lit, self.led_off) < 3.0) {
-                k += 0.05;
-                self.lit = mix(self.accent, self.ink, k);
-            }
+        let mut k = 0.0;
+        while k < 1.0 && (contrast(self.lit, self.tab) < 3.0 || contrast(self.lit, self.led_off) < 3.0) {
+            k += 0.05;
+            self.lit = mix(self.accent, self.ink, k);
         }
     }
 
@@ -248,8 +247,11 @@ mod tests {
             let t = Theme::new(rgb(0xf4, 0xf1, 0xea), acc);
             assert!(contrast(t.lit, t.tab) >= 3.0, "{} sobre tecla: {}", hex(acc), contrast(t.lit, t.tab));
             assert!(contrast(t.lit, t.led_off) >= 3.0, "{} contra apagado: {}", hex(acc), contrast(t.lit, t.led_off));
-            let dark = Theme::new(rgb(0x0d, 0x0f, 0x14), acc);
-            assert_eq!(dark.lit, acc, "en oscuro el acento queda igual");
+            for bg in [rgb(0x0d, 0x0f, 0x14), rgb(0x1f, 0x1f, 0x22), rgb(0, 0, 0)] {
+                let dark = Theme::new(bg, acc);
+                assert!(contrast(dark.lit, dark.tab) >= 3.0, "{} en oscuro: {}", hex(acc), contrast(dark.lit, dark.tab));
+                assert!(contrast(dark.lit, dark.accent) < 1.6, "en oscuro el acento casi no cambia: {}", hex(acc));
+            }
         }
     }
 
@@ -272,6 +274,14 @@ mod tests {
         assert_eq!(t.inset_a, 0.18);
         assert!(lum(t.well) < lum(t.bg) && lum(t.bg) - lum(t.well) < 0.1);
         assert!(lum(t.led_off) < lum(t.bg));
+    }
+
+    #[test]
+    fn dark_accent_on_dark_background_gets_lifted() {
+        let t = Theme::new(rgb(0x15, 0x15, 0x15), rgb(0x3a, 0x2a, 0x55));
+        assert!(contrast(t.lit, t.tab) >= 3.0, "lit sobre tecla: {}", contrast(t.lit, t.tab));
+        assert!(contrast(t.lit, t.led_off) >= 3.0);
+        assert!(lum(t.lit) > lum(t.accent), "se aclara");
     }
 
     #[test]

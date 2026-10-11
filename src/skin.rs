@@ -49,24 +49,24 @@ pub fn button(cv: &mut Canvas, t: &Theme, g: &mut glow::Cache, s: f32, l: f32, t
         let k = if st.active { 1.0 } else { 0.0 } + st.flash;
         if k > 0.0 {
             let spr = g.get((r - l).round() as i32, (b - top).round() as i32, rad, (8.0 * s).round() as i32);
-            cv.glow(spr, l, top, t.accent, t.glow_a * 0.5 * k.min(1.5));
+            cv.glow(spr, l, top, t.lit, t.glow_a * 0.5 * k.min(1.5));
         }
-        let base = if st.active { theme::mix(t.card, t.accent, 0.18) } else { theme::mix(t.card, t.hover, st.hover) };
+        let base = if st.active { theme::mix(t.card, t.lit, 0.18) } else { theme::mix(t.card, t.hover, st.hover) };
         cv.round(l, top, r, b, rad, base);
-        cv.ring(l, top, r, b, rad, 1.0, t.accent, if st.active { 0.9 } else { 0.14 + 0.25 * st.hover });
+        cv.ring(l, top, r, b, rad, 1.0, t.lit, if st.active { 0.9 } else { 0.14 + 0.25 * st.hover });
         return;
     }
-    let base = if st.active { theme::mix(t.tab, t.accent, 0.14) } else { theme::mix(t.tab, t.hover, st.hover) };
+    let base = if st.active { theme::mix(t.tab, t.lit, 0.14) } else { theme::mix(t.tab, t.hover, st.hover) };
     let k = if st.active { 1.0 } else { 0.0 } + st.flash;
     if k > 0.0 {
         let spr = g.get((r - l).round() as i32, (b - top).round() as i32, rad, (8.0 * s).round() as i32);
-        cv.glow(spr, l, top, t.accent, t.glow_a * 0.55 * k.min(1.5));
+        cv.glow(spr, l, top, t.lit, t.glow_a * 0.55 * k.min(1.5));
     }
     cv.round(l, top, r, b, rad, base);
     cv.round_a(l + rad, top, r - rad, top + 1.0, 0.0, t.ink, 0.07); // reflejo
     cv.round_a(l + rad, b, r - rad, b + 1.0, 0.0, rgb(0, 0, 0), 0.5); // sombra
     if st.active {
-        cv.ring(l, top, r, b, rad, 1.0, t.accent, 1.0);
+        cv.ring(l, top, r, b, rad, 1.0, t.lit, 1.0);
     }
 }
 
@@ -289,6 +289,16 @@ mod tests {
         button(&mut cv, &t, &mut g, 1.0, 10.0, 10.0, 50.0, 30.0, 4.0, St { active: true, ..St::default() });
         assert_eq!(at(&mut cv, 30, 10), theme::px(t.accent)); // borde de arriba
         assert_ne!(at(&mut cv, 30, 4), theme::px(t.bg)); // brillo afuera
+    }
+
+    #[test]
+    fn active_button_ring_uses_contrasted_accent() {
+        let t = Theme::new(rgb(0xf4, 0xf1, 0xea), rgb(0xea, 0xb3, 0x08));
+        let mut cv = unsafe { Canvas::new(60, 40) };
+        cv.pixels().fill(theme::px(t.bg));
+        let mut g = glow::Cache::default();
+        button(&mut cv, &t, &mut g, 1.0, 10.0, 10.0, 50.0, 30.0, 4.0, St { active: true, ..St::default() });
+        assert_eq!(at(&mut cv, 30, 10), theme::px(t.lit));
     }
 
     #[test]
