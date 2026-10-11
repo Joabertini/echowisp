@@ -36,6 +36,7 @@ pub struct Theme {
     pub top: u32,     // arriba del gradiente de la card
     pub glow_a: f32,  // intensidad del brillo del acento
     pub inset_a: f32, // sombra interior de los hundidos
+    pub lit: u32,     // acento para glifos, LEDs y segmentos: en fondos claros se oscurece hasta contrastar 3:1
 }
 
 fn ch(c: u32) -> (f32, f32, f32) {
@@ -47,6 +48,20 @@ pub fn mix(a: u32, b: u32, t: f32) -> u32 {
     let (a, b) = (ch(a), ch(b));
     let m = |x: f32, y: f32| (x + (y - x) * t).round().clamp(0.0, 255.0) as u8;
     rgb(m(a.0, b.0), m(a.1, b.1), m(a.2, b.2))
+}
+
+/// Contraste WCAG entre dos colores (1 a 21).
+pub fn contrast(a: u32, b: u32) -> f32 {
+    let rl = |c: u32| {
+        let (r, g, b) = ch(c);
+        let f = |v: f32| {
+            let v = v / 255.0;
+            if v <= 0.03928 { v / 12.92 } else { ((v + 0.055) / 1.055).powf(2.4) }
+        };
+        0.2126 * f(r) + 0.7152 * f(g) + 0.0722 * f(b)
+    };
+    let (x, y) = (rl(a), rl(b));
+    (x.max(y) + 0.05) / (x.min(y) + 0.05)
 }
 
 fn lum(c: u32) -> f32 {
@@ -83,7 +98,7 @@ impl Theme {
     pub fn new(bg: u32, accent: u32) -> Theme {
         let mut t = Theme {
             accent, bg, card: 0, tab: 0, hover: 0, hairline: 0, ink: 0, dim: 0, dim3: 0,
-            style: Style::Instrumento, audio: false, light: false, well: 0, led_off: 0, top: 0, glow_a: 0.0, inset_a: 0.0,
+            style: Style::Instrumento, audio: false, light: false, well: 0, led_off: 0, top: 0, glow_a: 0.0, inset_a: 0.0, lit: 0,
         };
         t.derive();
         t
@@ -105,6 +120,14 @@ impl Theme {
         self.top = mix(b, self.ink, 0.09);
         self.glow_a = if self.light { 0.35 } else { 0.70 };
         self.inset_a = if self.light { 0.18 } else { 0.60 };
+        self.lit = self.accent;
+        if self.light {
+            let mut k = 0.0;
+            while k < 1.0 && (contrast(self.lit, self.tab) < 3.0 || contrast(self.lit, self.led_off) < 3.0) {
+                k += 0.05;
+                self.lit = mix(self.accent, self.ink, k);
+            }
+        }
     }
 
     pub fn from_json(v: &Value) -> Theme {
@@ -193,6 +216,19 @@ pub unsafe fn blur(hwnd: HWND, cache: &mut BlurCache, w: i32, full_w: i32, x0: i
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn lit_accent_keeps_contrast_on_light_backgrounds() {
+        let accents = [0x6366f1u32, 0x8b5cf6, 0xec4899, 0xf97316, 0x22c55e, 0x06b6d4, 0xeab308];
+        for hexrgb in accents {
+            let acc = rgb((hexrgb >> 16) as u8, (hexrgb >> 8) as u8, hexrgb as u8);
+            let t = Theme::new(rgb(0xf4, 0xf1, 0xea), acc);
+            assert!(contrast(t.lit, t.tab) >= 3.0, "{} sobre tecla: {}", hex(acc), contrast(t.lit, t.tab));
+            assert!(contrast(t.lit, t.led_off) >= 3.0, "{} contra apagado: {}", hex(acc), contrast(t.lit, t.led_off));
+            let dark = Theme::new(rgb(0x0d, 0x0f, 0x14), acc);
+            assert_eq!(dark.lit, acc, "en oscuro el acento queda igual");
+        }
+    }
 
     #[test]
     fn dark_theme_tokens() {

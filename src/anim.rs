@@ -45,6 +45,11 @@ impl Anims {
         self.list.push(Anim { key, start: now, dur: dur_ms.max(1.0), from, to, rect });
     }
 
+    /// Valor desde el que arrancar `key`: el actual si esta animando, si no `idle` (su valor en reposo).
+    pub fn from_or(&self, key: Key, now: f64, idle: f32) -> f32 {
+        self.value(key, now).unwrap_or(idle)
+    }
+
     pub fn value(&self, key: Key, now: f64) -> Option<f32> {
         self.list.iter().find(|a| a.key == key).map(|a| a.at(now))
     }
@@ -88,6 +93,15 @@ pub fn breath(now: f64) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn from_or_uses_idle_value_when_not_running() {
+        let mut a = Anims::default();
+        assert_eq!(a.from_or(Key::Hover(5), 0.0, 0.0), 0.0, "hover que entra arranca de 0");
+        a.start(Key::Hover(5), 0.0, 100.0, 0.0, 1.0, (0, 0, 1, 1));
+        let mid = a.from_or(Key::Hover(5), 50.0, 0.0);
+        assert!(mid > 0.0 && mid < 1.0, "a mitad sigue desde el valor actual: {mid}");
+    }
     const R: Rect = (0, 0, 10, 10);
 
     #[test]

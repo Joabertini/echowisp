@@ -190,6 +190,14 @@ unsafe fn sys_anim() -> bool {
 }
 
 // ---- Lienzo: DIB de 32 bits con formas antialias hechas a mano ----
+/// Region guardada de un lienzo (ver `Canvas::patch`).
+struct Patch {
+    x0: i32,
+    y0: i32,
+    w: i32,
+    px: Vec<u32>,
+}
+
 struct Canvas {
     dc: HDC,
     bmp: HBITMAP,
@@ -321,19 +329,25 @@ impl Canvas {
         }
     }
 
-    /// Copia del lienzo antes de terminarlo (para repintar despues solo una region).
-    fn snapshot(&mut self) -> Vec<u32> {
-        self.pixels().to_vec()
+    /// Copia de la region [x0, x1) x [y0, y1) (recortada al lienzo), para repintar despues solo esa zona.
+    fn patch(&mut self, x0: i32, y0: i32, x1: i32, y1: i32) -> Patch {
+        let w = self.w;
+        let (x0, y0, x1, y1) = (x0.max(0), y0.max(0), x1.min(self.w).max(x0.max(0)), y1.min(self.h).max(y0.max(0)));
+        let src = self.pixels();
+        let mut px = Vec::with_capacity(((x1 - x0) * (y1 - y0)) as usize);
+        for y in y0..y1 {
+            px.extend_from_slice(&src[(y * w + x0) as usize..(y * w + x1) as usize]);
+        }
+        Patch { x0, y0, w: x1 - x0, px }
     }
 
-    /// Vuelve una region al estado de `base`.
-    fn restore(&mut self, base: &[u32], x0: i32, y0: i32, x1: i32, y1: i32) {
+    /// Vuelve la region de `p` a como estaba.
+    fn put(&mut self, p: &Patch) {
         let w = self.w;
-        let (x0, y0, x1, y1) = (x0.max(0), y0.max(0), x1.min(self.w), y1.min(self.h));
-        let px = self.pixels();
-        for y in y0..y1 {
-            let (a, b) = ((y * w + x0) as usize, (y * w + x1) as usize);
-            px[a..b].copy_from_slice(&base[a..b]);
+        let dst = self.pixels();
+        for (i, row) in p.px.chunks(p.w.max(1) as usize).enumerate() {
+            let a = ((p.y0 + i as i32) * w + p.x0) as usize;
+            dst[a..a + row.len()].copy_from_slice(row);
         }
     }
 
@@ -478,10 +492,10 @@ struct App {
     breath_timer: bool,
     breath_ms: u32, // intervalo del timer del LED: 66 ms respirando, 50 ms con vumetro
     meter: Option<meter::Meter>,
-    meter_tried: bool,
+    meter_tried: bool, // COM ya inicializado para el vumetro
     peak: f32,
     vu_root: (u32, Instant), // pid de Brave (brave.pid), releido cada 5 s
-    base: Vec<u32>, // lienzo antes de terminar, para repintar solo el LED
+    led_patch: Option<Patch>, // zona del LED sin el LED, para repintar solo esa zona al respirar
     prev_title: String, // titulo que se desvanece al cambiar de cancion
     canvas: Option<Canvas>,
     dirty: bool,
@@ -646,13 +660,16 @@ impl App {
         if !th().audio {
             return None;
         }
-        if self.meter.is_none() && !self.meter_tried {
+        if !self.meter_tried {
             self.meter_tried = true;
-            self.meter = meter::Meter::new();
+            meter::com_init();
         }
         if self.vu_root.1.elapsed().as_secs() >= 5 {
             let pid = std::fs::read_to_string(brave::data_dir().join("brave.pid")).ok().and_then(|s| s.trim().parse().ok()).unwrap_or(0);
             self.vu_root = (pid, Instant::now());
+            // La salida de audio puede cambiar (auriculares, Bluetooth) o aparecer despues: se vuelve a tomar
+            // la de por defecto. Sin ninguna, None y respira el LED.
+            self.meter = meter::Meter::new();
         }
         let root = self.vu_root.0;
         let m = self.meter.as_mut()?;
@@ -672,9 +689,18 @@ impl App {
     }
 
     /// Un cuadro del LED que respira: repinta y presenta solo su rectangulo.
+    /// Zona del LED de estado con su brillo (abarca tambien el vumetro).
+    fn led_rect(&self) -> (i32, i32, i32, i32) {
+        let s = self.scale;
+        let (cx, cy) = (self.pf(LED_X), self.pf(LED_Y));
+        let (hw, hh) = (11.0 * s, 3.5 * s);
+        let pad = (6.0 * s).round() as i32 + 2;
+        ((cx - hw) as i32 - pad, (cy - hh) as i32 - pad, (cx + hw) as i32 + pad + 1, (cy + hh) as i32 + pad + 1)
+    }
+
     fn breath_frame(&mut self) {
         let Some(mut cv) = self.canvas.take() else { return };
-        if self.base.len() != (cv.w * cv.h) as usize || !self.motion() {
+        if self.led_patch.is_none() || !self.motion() {
             self.canvas = Some(cv);
             self.breath_sync();
             return;
@@ -683,12 +709,10 @@ impl App {
         if let Some(p) = self.vu_peak() {
             self.peak = p;
         }
-        let (cx, cy) = (self.pf(LED_X), self.pf(LED_Y));
-        let (hw, hh) = (11.0 * s, 3.5 * s); // abarca el LED y el vumetro
-        let pad = (6.0 * s).round() as i32 + 2;
-        let (x0, y0) = ((cx - hw) as i32 - pad, (cy - hh) as i32 - pad);
-        let (x1, y1) = ((cx + hw) as i32 + pad + 1, (cy + hh) as i32 + pad + 1);
-        cv.restore(&self.base, x0, y0, x1, y1);
+        let (x0, y0, x1, y1) = self.led_rect();
+        if let Some(p) = &self.led_patch {
+            cv.put(p);
+        }
         let mut g = std::mem::take(&mut self.glows);
         self.status_light(&mut cv, &mut g, anim::breath(self.now_ms()), th().accent);
         self.glows = g;
@@ -940,7 +964,8 @@ impl App {
         self.vol = v.clamp(0.0, 100.0).round();
         let d = ((self.vol - old).abs() / 10.0) as f32;
         if d > 0.0 {
-            self.anim_start(anim::Key::Seg(1), (40.0 * d).max(40.0), f32::NAN, (self.vol / 10.0) as f32);
+            let from = self.anims.from_or(anim::Key::Seg(1), self.now_ms(), (old / 10.0) as f32);
+            self.anim_start(anim::Key::Seg(1), (40.0 * d).max(40.0), from, (self.vol / 10.0) as f32);
         }
         self.muted = false;
         self.vol_at = Instant::now();
@@ -1442,12 +1467,13 @@ impl App {
         }
 
         let login = self.ready && !self.logged;
+        let mut led: Option<(f32, u32)> = None;
         if inst {
             // LED de estado debajo del engranaje: acento sonando, apagado en pausa, color fijo en avisos.
             let (on, c) = if dot == GREEN { (1.0, tm.accent) } else if dot == tm.dim3 { (0.0, tm.accent) } else { (1.0, dot) };
             let on = if dot == GREEN && self.breath_timer { anim::breath(self.now_ms()) } else { on };
             let on = if self.boot_v() > 0.05 { on } else { 0.0 };
-            self.status_light(&mut cv, &mut g, on, c);
+            led = Some((on, c)); // se dibuja al final, sobre la zona guardada
         }
 
         // Botones redondos del encabezado (hover; el engranaje se resalta mientras su card esta afuera).
@@ -1685,7 +1711,7 @@ impl App {
         let ic = |hb: Hit| if self.hover == hb { th().ink } else { th().dim };
         cv.text(self.f.icon, "\u{E8B1}", self.zone(Hit::Shuffle), ic(Hit::Shuffle), DT_CENTER);
         cv.text(self.f.icon_big, "\u{E892}", self.zone(Hit::Prev), ic(Hit::Prev), DT_CENTER);
-        cv.text(self.f.icon_big, if self.paused { "\u{E768}" } else { "\u{E769}" }, self.zone(Hit::Play), if inst { tm.accent } else { th().bg }, DT_CENTER);
+        cv.text(self.f.icon_big, if self.paused { "\u{E768}" } else { "\u{E769}" }, self.zone(Hit::Play), if inst { tm.lit } else { th().bg }, DT_CENTER);
         cv.text(self.f.icon_big, "\u{E893}", self.zone(Hit::Next), ic(Hit::Next), DT_CENTER);
         let (rg, rc) = match self.repeat.as_str() {
             "ONE" => ("\u{E8ED}", th().accent),
@@ -1793,10 +1819,11 @@ impl App {
         }
 
         GdiFlush();
-        if inst {
-            self.base = cv.snapshot();
-        } else {
-            self.base.clear();
+        self.led_patch = None;
+        if let Some((on, c)) = led {
+            let (x0, y0, x1, y1) = self.led_rect();
+            self.led_patch = Some(cv.patch(x0, y0, x1, y1));
+            self.status_light(&mut cv, &mut g, on, c);
         }
         cv.finish(RADIUS * s);
         self.glows = g;
@@ -2038,9 +2065,11 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
             let h = a.hit(mx, my);
             if h != a.hover {
                 let old = a.hover;
+                let now = a.now_ms();
+                let (fo, fi) = (a.anims.from_or(anim::Key::Hover(hit_id(old)), now, 1.0), a.anims.from_or(anim::Key::Hover(hit_id(h)), now, 0.0));
                 a.hover = h;
-                a.anim_start(anim::Key::Hover(hit_id(old)), 120.0, f32::NAN, 0.0);
-                a.anim_start(anim::Key::Hover(hit_id(h)), 120.0, f32::NAN, 1.0);
+                a.anim_start(anim::Key::Hover(hit_id(old)), 120.0, fo, 0.0);
+                a.anim_start(anim::Key::Hover(hit_id(h)), 120.0, fi, 1.0);
                 SetCursor(LoadCursorW(null_mut(), if h == Hit::Field { IDC_IBEAM } else if h == Hit::None { IDC_ARROW } else { IDC_HAND }));
                 a.invalidate();
             }
@@ -2058,8 +2087,9 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
             a.tracking = false;
             if a.hover != Hit::None {
                 let old = a.hover;
+                let fo = a.anims.from_or(anim::Key::Hover(hit_id(old)), a.now_ms(), 1.0);
                 a.hover = Hit::None;
-                a.anim_start(anim::Key::Hover(hit_id(old)), 120.0, f32::NAN, 0.0);
+                a.anim_start(anim::Key::Hover(hit_id(old)), 120.0, fo, 0.0);
                 a.invalidate();
             }
             0
@@ -2227,7 +2257,7 @@ fn main() {
             meter_tried: false,
             peak: 0.0,
             vu_root: (0, Instant::now() - std::time::Duration::from_secs(60)),
-            base: Vec::new(),
+            led_patch: None,
             prev_title: String::new(),
             canvas: None,
             dirty: false,
@@ -2359,6 +2389,20 @@ mod canvas_tests {
         cv.finish_rect(0.0, 10, 10, 20, 20);
         assert_eq!(at(&mut cv, 5, 5), 0x00ff_ffff); // fuera: sin alfa todavia
         assert!(at(&mut cv, 15, 15) >> 24 > 0); // dentro: alfa aplicado
+    }
+
+    #[test]
+    fn patch_put_restores_only_its_region() {
+        let mut cv = unsafe { Canvas::new(30, 30) };
+        cv.pixels().fill(0x0011_1111);
+        let p = cv.patch(10, 10, 20, 20);
+        assert_eq!(p.px.len(), 100, "solo guarda la region");
+        cv.pixels().fill(0x0022_2222);
+        cv.put(&p);
+        assert_eq!(at(&mut cv, 15, 15), 0x0011_1111);
+        assert_eq!(at(&mut cv, 5, 5), 0x0022_2222);
+        let edge = cv.patch(-5, -5, 3, 3); // recortado al lienzo
+        assert_eq!(edge.px.len(), 9);
     }
 
     #[test]

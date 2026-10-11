@@ -51,6 +51,7 @@ pub fn button(cv: &mut Canvas, t: &Theme, g: &mut glow::Cache, s: f32, l: f32, t
 
 /// Barra de `n` segmentos; `lit` encendidos (fraccional para la cascada); `boot` 0..1 los prende en orden.
 pub fn segments(cv: &mut Canvas, t: &Theme, g: &mut glow::Cache, s: f32, l: f32, top: f32, r: f32, b: f32, n: usize, lit: f32, c: u32, boot: f32) {
+    let c = if c == t.accent { t.lit } else { c }; // en fondos claros, el acento con contraste
     let gap = (2.0 * s).max(1.0);
     let sw = (r - l - gap * (n as f32 - 1.0)) / n as f32;
     for i in 0..n {
@@ -68,6 +69,7 @@ pub fn segments(cv: &mut Canvas, t: &Theme, g: &mut glow::Cache, s: f32, l: f32,
 
 /// LED cuadrado; `on` 0..1 es su brillo (respira), `c` el color encendido.
 pub fn led(cv: &mut Canvas, t: &Theme, g: &mut glow::Cache, s: f32, cx: f32, cy: f32, size: f32, on: f32, c: u32) {
+    let c = if c == t.accent { t.lit } else { c };
     let (l, top) = (cx - size / 2.0, cy - size / 2.0);
     cv.round(l, top, l + size, top + size, 2.0 * s, t.led_off);
     if on > 0.0 {
@@ -135,6 +137,16 @@ mod tests {
         button(&mut cv, &t, &mut g, 1.0, 10.0, 10.0, 50.0, 30.0, 4.0, St { active: true, ..St::default() });
         assert_eq!(at(&mut cv, 30, 10), theme::px(t.accent)); // borde de arriba
         assert_ne!(at(&mut cv, 30, 4), theme::px(t.bg)); // brillo afuera
+    }
+
+    #[test]
+    fn light_theme_segments_use_contrasted_accent() {
+        let t = Theme::new(rgb(0xf4, 0xf1, 0xea), rgb(0xea, 0xb3, 0x08));
+        assert_ne!(t.lit, t.accent);
+        let mut cv = unsafe { Canvas::new(46, 10) };
+        let mut g = glow::Cache::default();
+        segments(&mut cv, &t, &mut g, 1.0, 0.0, 2.0, 46.0, 8.0, 4, 4.0, t.accent, 1.0);
+        assert_eq!(at(&mut cv, 5, 5), theme::px(t.lit));
     }
 
     #[test]

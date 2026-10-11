@@ -41,6 +41,14 @@ fn parent_table() -> Vec<(u32, u32)> {
     v
 }
 
+/// COM en el hilo de la UI (STA, tiene bucle de mensajes). Se inicializa una vez y queda hasta que termina
+/// el proceso, por eso no hay CoUninitialize.
+pub fn com_init() {
+    unsafe {
+        let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
+    }
+}
+
 pub struct Meter {
     mgr: IAudioSessionManager2,
     parents: Vec<(u32, u32)>,
@@ -50,7 +58,6 @@ pub struct Meter {
 impl Meter {
     pub fn new() -> Option<Meter> {
         unsafe {
-            let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
             let en = CoCreateInstance::<_, IMMDeviceEnumerator>(&MMDeviceEnumerator, None, CLSCTX_ALL).ok()?;
             let dev = en.GetDefaultAudioEndpoint(eRender, eConsole).ok()?;
             let mgr = dev.Activate::<IAudioSessionManager2>(CLSCTX_ALL, None).ok()?;
