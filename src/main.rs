@@ -62,6 +62,10 @@ const T_SEARCH: usize = 1;
 const T_TICK: usize = 2;
 const T_MSG: usize = 3;
 const T_CARET: usize = 4;
+const T_ANIM: usize = 7; // animaciones cortas: vive solo mientras hay alguna
+const T_BREATH: usize = 8; // LED que respira / vumetro: solo sonando, visible y expandida
+const LED_X: f32 = 22.0; // LED de estado, debajo del engranaje
+const LED_Y: f32 = 40.0;
 
 const HK_TOGGLE: i32 = 1;
 const HK_NEXT: i32 = 2;
@@ -147,6 +151,41 @@ impl Item {
         let s = |k: &str| x[k].as_str().map(String::from);
         Item { id: s("id"), list: s("list"), title: s("title").unwrap_or_default(), sub: s("sub").unwrap_or_default(), pick: s("pick") }
     }
+}
+
+/// Numero estable por zona (clave de sus animaciones).
+fn hit_id(h: Hit) -> u32 {
+    match h {
+        Hit::None => 0,
+        Hit::Close => 1,
+        Hit::Login => 2,
+        Hit::Shuffle => 3,
+        Hit::Prev => 4,
+        Hit::Play => 5,
+        Hit::Next => 6,
+        Hit::Repeat => 7,
+        Hit::Bar => 8,
+        Hit::Vol => 9,
+        Hit::VolBar => 10,
+        Hit::Field => 11,
+        Hit::Lists => 12,
+        Hit::Again => 13,
+        Hit::Quick => 14,
+        Hit::Gear => 15,
+        Hit::BrChannel => 16,
+        Hit::BrGo => 17,
+        Hit::BrApps => 18,
+        Hit::DscRow => 19,
+        Hit::Row(i) => 1000 + i as u32,
+        Hit::Radio(i) => 2000 + i as u32,
+    }
+}
+
+/// Si Windows tiene prendidas las animaciones (Accesibilidad > Efectos visuales).
+unsafe fn sys_anim() -> bool {
+    let mut on: i32 = 1;
+    SystemParametersInfoW(SPI_GETCLIENTAREAANIMATION, 0, &mut on as *mut i32 as *mut _, 0);
+    on != 0
 }
 
 // ---- Lienzo: DIB de 32 bits con formas antialias hechas a mano ----
@@ -432,6 +471,12 @@ struct App {
     scale: f32,
     f: Fonts,
     glows: glow::Cache, // brillos del estilo Instrumento, por tamaño
+    anims: anim::Anims,
+    t0: Instant, // origen del reloj de las animaciones
+    anim_timer: bool,
+    breath_timer: bool,
+    base: Vec<u32>, // lienzo antes de terminar, para repintar solo el LED
+    prev_title: String, // titulo que se desvanece al cambiar de cancion
     canvas: Option<Canvas>,
     dirty: bool,
     // reproduccion
@@ -520,9 +565,114 @@ fn mmss(t: f64) -> String {
 }
 
 impl App {
-    /// Cuanto esta encima el puntero de `h` (0..1).
+    /// Cuanto esta encima el puntero de `h` (0..1, animado).
     fn hv(&self, h: Hit) -> f32 {
-        if self.hover == h { 1.0 } else { 0.0 }
+        self.anims.value(anim::Key::Hover(hit_id(h)), self.now_ms()).unwrap_or(if self.hover == h { 1.0 } else { 0.0 })
+    }
+
+    fn now_ms(&self) -> f64 {
+        self.t0.elapsed().as_secs_f64() * 1000.0
+    }
+
+    /// Si corren las animaciones: estilo Instrumento, card expandida y visible, y Windows con animaciones.
+    fn motion(&self) -> bool {
+        th().style == theme::Style::Instrumento && !self.mini && unsafe { IsWindowVisible(self.hwnd) != 0 && sys_anim() }
+    }
+
+    fn full_rect(&self) -> anim::Rect {
+        (0, 0, self.width(), self.height())
+    }
+
+    fn anim_start(&mut self, key: anim::Key, dur: f32, from: f32, to: f32) {
+        if !self.motion() {
+            return;
+        }
+        let (now, r) = (self.now_ms(), self.full_rect());
+        self.anims.start(key, now, dur, from, to, r);
+        if !self.anim_timer {
+            self.anim_timer = true;
+            unsafe { SetTimer(self.hwnd, T_ANIM, 15, None) };
+        }
+    }
+
+    /// Paso de las animaciones cortas (timer T_ANIM): repinta la card entera durante la rafaga.
+    fn anim_tick(&mut self) {
+        if !self.motion() {
+            self.anims.finish_all();
+        }
+        if self.anims.step(self.now_ms()).is_some() {
+            unsafe { self.render() };
+        }
+        if self.anims.is_empty() {
+            self.anim_timer = false;
+            unsafe { KillTimer(self.hwnd, T_ANIM) };
+        }
+    }
+
+    /// Al encender la card: LEDs y segmentos se prenden en secuencia.
+    fn boot(&mut self) {
+        self.anim_start(anim::Key::Boot, 300.0, 0.0, 1.0);
+    }
+
+    fn boot_v(&self) -> f32 {
+        self.anims.value(anim::Key::Boot, self.now_ms()).unwrap_or(1.0)
+    }
+
+    /// Prende o apaga el timer del LED que respira segun haga falta.
+    fn breath_sync(&mut self) {
+        let want = self.motion() && self.ready && !self.paused && !self.title.is_empty() && !self.ad;
+        if want != self.breath_timer {
+            self.breath_timer = want;
+            unsafe {
+                if want {
+                    SetTimer(self.hwnd, T_BREATH, 66, None);
+                } else {
+                    KillTimer(self.hwnd, T_BREATH);
+                }
+            }
+        }
+    }
+
+    /// Un cuadro del LED que respira: repinta y presenta solo su rectangulo.
+    fn breath_frame(&mut self) {
+        let Some(mut cv) = self.canvas.take() else { return };
+        if self.base.len() != (cv.w * cv.h) as usize || !self.motion() {
+            self.canvas = Some(cv);
+            self.breath_sync();
+            return;
+        }
+        let s = self.scale;
+        let (cx, cy, size) = (self.pf(LED_X), self.pf(LED_Y), 7.0 * s);
+        let pad = (6.0 * s).round() as i32 + 2;
+        let (x0, y0) = ((cx - size / 2.0) as i32 - pad, (cy - size / 2.0) as i32 - pad);
+        let (x1, y1) = ((cx + size / 2.0) as i32 + pad + 1, (cy + size / 2.0) as i32 + pad + 1);
+        cv.restore(&self.base, x0, y0, x1, y1);
+        let mut g = std::mem::take(&mut self.glows);
+        skin::led(&mut cv, th(), &mut g, s, cx, cy, size, anim::breath(self.now_ms()), th().accent);
+        self.glows = g;
+        cv.finish_rect(RADIUS * s, x0, y0, x1, y1);
+        unsafe { self.present_dirty(&cv, RECT { left: x0.max(0), top: y0.max(0), right: x1.min(cv.w), bottom: y1.min(cv.h) }) };
+        self.canvas = Some(cv);
+    }
+
+    /// Presenta solo `dirty` del lienzo (misma posicion y tamaño que la ultima presentacion).
+    unsafe fn present_dirty(&self, cv: &Canvas, dirty: RECT) {
+        let src = POINT { x: 0, y: 0 };
+        let size = SIZE { cx: cv.w, cy: cv.h };
+        let blend = BLENDFUNCTION { BlendOp: AC_SRC_OVER as u8, BlendFlags: 0, SourceConstantAlpha: 255, AlphaFormat: AC_SRC_ALPHA as u8 };
+        let info = UPDATELAYEREDWINDOWINFO {
+            cbSize: size_of::<UPDATELAYEREDWINDOWINFO>() as u32,
+            hdcDst: null_mut(),
+            pptDst: null(),
+            psize: &size,
+            hdcSrc: cv.dc,
+            pptSrc: &src,
+            crKey: 0,
+            pblend: &blend,
+            dwFlags: ULW_ALPHA,
+            prcDirty: &dirty,
+        };
+        UpdateLayeredWindowIndirect(self.hwnd, &info);
     }
 
     /// Rehace las fuentes (al cambiar de estilo) y libera las anteriores.
@@ -744,7 +894,12 @@ impl App {
     }
 
     fn set_vol(&mut self, v: f64) {
+        let old = self.vol;
         self.vol = v.clamp(0.0, 100.0).round();
+        let d = ((self.vol - old).abs() / 10.0) as f32;
+        if d > 0.0 {
+            self.anim_start(anim::Key::Seg(1), (40.0 * d).max(40.0), f32::NAN, (self.vol / 10.0) as f32);
+        }
         self.muted = false;
         self.vol_at = Instant::now();
         self.invalidate();
@@ -761,9 +916,13 @@ impl App {
 
     fn toggle_mini(&mut self) {
         self.mini = !self.mini;
+        self.anims.finish_all();
         self.panel_hide_now();
         self.clear_search();
         self.hover = Hit::None;
+        if !self.mini {
+            self.boot();
+        }
     }
 
     /// Selectores del puente: reusan la lista de resultados.
@@ -1065,7 +1224,12 @@ impl App {
             }
             Ev::State(s) => {
                 self.ready = true;
-                self.title = if s["ad"] == true { t("ad").into() } else { s["title"].as_str().unwrap_or_default().to_string() };
+                let title = if s["ad"] == true { t("ad").into() } else { s["title"].as_str().unwrap_or_default().to_string() };
+                if title != self.title && !self.title.is_empty() && !title.is_empty() {
+                    self.prev_title = std::mem::take(&mut self.title);
+                    self.anim_start(anim::Key::Title, 220.0, 0.0, 1.0);
+                }
+                self.title = title;
                 self.artist = s["artist"].as_str().unwrap_or_default().to_string();
                 self.paused = s["paused"].as_bool().unwrap_or(true);
                 self.ad = s["ad"].as_bool().unwrap_or(false);
@@ -1239,7 +1403,9 @@ impl App {
         if inst {
             // LED de estado debajo del engranaje: acento sonando, apagado en pausa, color fijo en avisos.
             let (on, c) = if dot == GREEN { (1.0, tm.accent) } else if dot == tm.dim3 { (0.0, tm.accent) } else { (1.0, dot) };
-            skin::led(&mut cv, tm, &mut g, s, self.pf(22.0), self.pf(40.0), 7.0 * s, on, c);
+            let on = if dot == GREEN && self.breath_timer { anim::breath(self.now_ms()) } else { on };
+            let on = if self.boot_v() > 0.05 { on } else { 0.0 };
+            skin::led(&mut cv, tm, &mut g, s, self.pf(LED_X), self.pf(LED_Y), 7.0 * s, on, c);
         }
 
         // Botones redondos del encabezado (hover; el engranaje se resalta mientras su card esta afuera).
@@ -1255,7 +1421,8 @@ impl App {
         if inst {
             for hb in [Hit::Shuffle, Hit::Prev, Hit::Play, Hit::Next, Hit::Repeat] {
                 let z = self.zone(hb);
-                let st = skin::St { hover: self.hv(hb), active: hb == Hit::Play, flash: 0.0 };
+                let fl = self.anims.value(anim::Key::Flash(hit_id(hb)), self.now_ms()).unwrap_or(0.0);
+                let st = skin::St { hover: self.hv(hb), active: hb == Hit::Play, flash: fl };
                 skin::button(&mut cv, tm, &mut g, s, z.left as f32, z.top as f32, z.right as f32, z.bottom as f32, 6.0 * s, st);
             }
         } else {
@@ -1281,13 +1448,15 @@ impl App {
             // Barras en segmentos; una marca fina sigue al puntero para buscar o ajustar.
             let f = if self.dur > 0.0 { (self.cur_pos() / self.dur).clamp(0.0, 1.0) as f32 } else { 0.0 };
             let pc = if self.ad { AMBER } else { tm.accent };
-            skin::segments(&mut cv, tm, &mut g, s, bl, by - 2.5 * s, br, by + 2.5 * s, 14, f * 14.0, pc, 1.0);
+            let boot = self.boot_v();
+            skin::segments(&mut cv, tm, &mut g, s, bl, by - 2.5 * s, br, by + 2.5 * s, 14, f * 14.0, pc, boot);
             if self.hover == Hit::Bar && self.dur > 0.0 {
                 let x = bl + (br - bl) * f;
                 cv.round(x - 1.5 * s, by - 6.0 * s, x + 1.5 * s, by + 6.0 * s, 1.0, tm.ink);
             }
             let vc = if self.muted { tm.dim3 } else { tm.accent };
-            skin::segments(&mut cv, tm, &mut g, s, bl, vy - 2.0 * s, br, vy + 2.0 * s, 10, (self.vol / 10.0) as f32, vc, 1.0);
+            let vl = self.anims.value(anim::Key::Seg(1), self.now_ms()).unwrap_or((self.vol / 10.0) as f32);
+            skin::segments(&mut cv, tm, &mut g, s, bl, vy - 2.0 * s, br, vy + 2.0 * s, 10, vl, vc, boot);
             if vhot {
                 let x = bl + (br - bl) * (self.vol / 100.0) as f32;
                 cv.round(x - 1.5 * s, vy - 6.0 * s, x + 1.5 * s, vy + 6.0 * s, 1.0, tm.ink);
@@ -1326,7 +1495,8 @@ impl App {
             }
             for tb in [Hit::Lists, Hit::Again, Hit::Quick] {
                 let z = self.zone(tb);
-                let st = skin::St { hover: self.hv(tb), active: self.shown == tb, flash: 0.0 };
+                let fl = self.anims.value(anim::Key::Flash(hit_id(tb)), self.now_ms()).unwrap_or(0.0);
+                let st = skin::St { hover: self.hv(tb), active: self.shown == tb, flash: fl };
                 skin::button(&mut cv, tm, &mut g, s, z.left as f32, z.top as f32, z.right as f32, z.bottom as f32, 6.0 * s, st);
             }
         } else {
@@ -1351,7 +1521,8 @@ impl App {
                 for hb in [Hit::BrGo, Hit::BrApps] {
                     let b = self.zone(hb);
                     let on = hb == Hit::BrApps && self.panel == Panel::Apps && self.panel_target > 0.0;
-                    let st = skin::St { hover: self.hv(hb), active: on, flash: 0.0 };
+                    let fl = self.anims.value(anim::Key::Flash(hit_id(hb)), self.now_ms()).unwrap_or(0.0);
+                    let st = skin::St { hover: self.hv(hb), active: on, flash: fl };
                     skin::button(&mut cv, tm, &mut g, s, b.left as f32, b.top as f32, b.right as f32, b.bottom as f32, 5.0 * s, st);
                 }
             } else {
@@ -1449,7 +1620,13 @@ impl App {
         GdiFlush();
 
         // ---- Texto ----
-        if inst {
+        let fade = if inst { self.anims.value(anim::Key::Title, self.now_ms()) } else { None };
+        if let Some(v) = fade {
+            // Cambio de cancion: el titulo viejo se desvanece y entra el nuevo.
+            cv.text(self.f.title, &self.prev_title.to_uppercase(), self.r(40, 8, W - 40, 28), theme::mix(tm.ink, tm.bg, v), DT_CENTER);
+            cv.text(self.f.title, &line1.to_uppercase(), self.r(40, 8, W - 40, 28), theme::mix(tm.bg, tm.ink, v), DT_CENTER);
+            cv.text(self.f.light, line2, self.r(40, 27, W - 40, 44), theme::mix(tm.bg, c2, v), DT_CENTER);
+        } else if inst {
             cv.text(self.f.title, &line1.to_uppercase(), self.r(40, 8, W - 40, 28), tm.ink, DT_CENTER);
             cv.text(self.f.light, line2, self.r(40, 27, W - 40, 44), c2, DT_CENTER);
         } else {
@@ -1574,9 +1751,15 @@ impl App {
         }
 
         GdiFlush();
+        if inst {
+            self.base = cv.snapshot();
+        } else {
+            self.base.clear();
+        }
         cv.finish(RADIUS * s);
         self.glows = g;
         self.present(cv, w, h);
+        self.breath_sync();
     }
 
     /// Vuelca el lienzo a la ventana. Si cambia el ancho se mantiene el centro (colapsar
@@ -1752,9 +1935,12 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
                 HK_SHOW => {
                     if IsWindowVisible(hwnd) != 0 {
                         a.panel_hide_now();
+                        a.anims.finish_all();
                         ShowWindow(hwnd, SW_HIDE);
+                        a.breath_sync();
                     } else {
                         show(hwnd, false);
+                        a.boot();
                     }
                 }
                 HK_SEARCH => {
@@ -1776,7 +1962,13 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
             0
         }
         WM_LBUTTONDOWN => {
+            let h = a.hit(mx, my);
+            let rows = a.rows_visible();
             a.click(mx, my);
+            let flashy = matches!(h, Hit::Play | Hit::Prev | Hit::Next | Hit::Shuffle | Hit::Repeat | Hit::Lists | Hit::Again | Hit::Quick | Hit::BrGo | Hit::BrApps);
+            if flashy && a.rows_visible() == rows {
+                a.anim_start(anim::Key::Flash(hit_id(h)), 150.0, 1.0, 0.0);
+            }
             0
         }
         WM_LBUTTONUP => {
@@ -1803,7 +1995,10 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
             }
             let h = a.hit(mx, my);
             if h != a.hover {
+                let old = a.hover;
                 a.hover = h;
+                a.anim_start(anim::Key::Hover(hit_id(old)), 120.0, f32::NAN, 0.0);
+                a.anim_start(anim::Key::Hover(hit_id(h)), 120.0, f32::NAN, 1.0);
                 SetCursor(LoadCursorW(null_mut(), if h == Hit::Field { IDC_IBEAM } else if h == Hit::None { IDC_ARROW } else { IDC_HAND }));
                 a.invalidate();
             }
@@ -1820,7 +2015,9 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
         WM_MOUSELEAVE_ => {
             a.tracking = false;
             if a.hover != Hit::None {
+                let old = a.hover;
                 a.hover = Hit::None;
+                a.anim_start(anim::Key::Hover(hit_id(old)), 120.0, f32::NAN, 0.0);
                 a.invalidate();
             }
             0
@@ -1876,6 +2073,8 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
                     }
                 }
                 T_TICK => a.invalidate(),
+                T_ANIM => a.anim_tick(),
+                T_BREATH => a.breath_frame(),
                 panel::T_PANEL => a.panel_tick(),
                 T_MSG => {
                     KillTimer(hwnd, T_MSG);
@@ -1977,6 +2176,12 @@ fn main() {
             scale,
             f: make_fonts(scale, th().style),
             glows: glow::Cache::default(),
+            anims: anim::Anims::default(),
+            t0: Instant::now(),
+            anim_timer: false,
+            breath_timer: false,
+            base: Vec::new(),
+            prev_title: String::new(),
             canvas: None,
             dirty: false,
             title: String::new(),
@@ -2126,6 +2331,16 @@ mod canvas_tests {
             assert!(font_exists("Segoe UI"));
             assert!(!font_exists("Fuente Que No Existe 123"));
         }
+    }
+
+    #[test]
+    fn hit_ids_are_unique() {
+        let hits = [Hit::Close, Hit::Play, Hit::Prev, Hit::Next, Hit::Shuffle, Hit::Repeat, Hit::Lists, Hit::Again,
+            Hit::Quick, Hit::Field, Hit::BrGo, Hit::BrApps, Hit::Row(0), Hit::Row(1), Hit::Radio(0)];
+        let mut ids: Vec<u32> = hits.iter().map(|&h| hit_id(h)).collect();
+        ids.sort();
+        ids.dedup();
+        assert_eq!(ids.len(), hits.len());
     }
 
     #[test]
