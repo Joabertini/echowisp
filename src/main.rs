@@ -343,6 +343,13 @@ impl Canvas {
         SelectObject(self.dc, old);
     }
 
+    /// Como `text`, con `extra` px entre letras (etiquetas en mayusculas del estilo Instrumento).
+    unsafe fn text_spaced(&self, f: HFONT, s: &str, r: RECT, c: u32, fmt: DRAW_TEXT_FORMAT, extra: i32) {
+        SetTextCharacterExtra(self.dc, extra);
+        self.text(f, s, r, c, fmt);
+        SetTextCharacterExtra(self.dc, 0);
+    }
+
     /// Texto de varias lineas alineado a la izquierda dentro de `r`. Si no entra se ve el final (lo ultimo
     /// que se escribio), como en un campo de texto.
     unsafe fn text_box(&self, f: HFONT, s: &str, r: RECT, c: u32) {
@@ -412,6 +419,8 @@ struct Fonts {
     title: HFONT,
     text: HFONT,
     small: HFONT,
+    light: HFONT, // subtitulos
+    label: HFONT, // etiquetas chicas en mayusculas
     icon: HFONT,
     icon_big: HFONT,
 }
@@ -509,6 +518,14 @@ fn mmss(t: f64) -> String {
 }
 
 impl App {
+    /// Rehace las fuentes (al cambiar de estilo) y libera las anteriores.
+    unsafe fn fonts_reset(&mut self) {
+        let old = std::mem::replace(&mut self.f, make_fonts(self.scale, th().style));
+        for f in [old.title, old.text, old.small, old.light, old.label, old.icon, old.icon_big] {
+            DeleteObject(f);
+        }
+    }
+
     fn px(&self, v: i32) -> i32 {
         (v as f32 * self.scale).round() as i32
     }
@@ -1525,14 +1542,47 @@ unsafe fn font(px: i32, weight: i32, face: &str) -> HFONT {
         CLIP_DEFAULT_PRECIS as u32, ANTIALIASED_QUALITY as u32, DEFAULT_PITCH as u32, wide(face).as_ptr())
 }
 
-unsafe fn make_fonts(scale: f32) -> Fonts {
-    let px = |v: i32| (v as f32 * scale).round() as i32;
-    Fonts {
-        title: font(px(14), 600, "Segoe UI"),
-        text: font(px(13), 400, "Segoe UI"),
-        small: font(px(11), 400, "Segoe UI"),
-        icon: font(px(13), 400, "Segoe MDL2 Assets"),
-        icon_big: font(px(15), 400, "Segoe MDL2 Assets"),
+unsafe extern "system" fn font_found(_: *const LOGFONTW, _: *const TEXTMETRICW, _: u32, found: LPARAM) -> i32 {
+    *(found as *mut bool) = true;
+    0
+}
+
+/// Si la fuente esta instalada (Bahnschrift viene con Windows 10 1709+, pero se chequea igual).
+unsafe fn font_exists(face: &str) -> bool {
+    let mut lf: LOGFONTW = zeroed();
+    lf.lfCharSet = DEFAULT_CHARSET as u8;
+    for (i, c) in face.encode_utf16().take(31).enumerate() {
+        lf.lfFaceName[i] = c;
+    }
+    let dc = GetDC(null_mut());
+    let mut found = false;
+    EnumFontFamiliesExW(dc, &lf, Some(font_found), &mut found as *mut bool as LPARAM, 0);
+    ReleaseDC(null_mut(), dc);
+    found
+}
+
+unsafe fn make_fonts(scale: f32, style: theme::Style) -> Fonts {
+    let px = |v: f32| (v * scale).round() as i32;
+    if style == theme::Style::Instrumento && font_exists("Bahnschrift") {
+        Fonts {
+            title: font(px(15.0), 600, "Bahnschrift"),
+            text: font(px(12.5), 400, "Bahnschrift"),
+            small: font(px(11.0), 400, "Bahnschrift"),
+            light: font(px(12.0), 300, "Bahnschrift"),
+            label: font(px(9.5), 400, "Bahnschrift"),
+            icon: font(px(13.0), 400, "Segoe MDL2 Assets"),
+            icon_big: font(px(15.0), 400, "Segoe MDL2 Assets"),
+        }
+    } else {
+        Fonts {
+            title: font(px(14.0), 600, "Segoe UI"),
+            text: font(px(13.0), 400, "Segoe UI"),
+            small: font(px(11.0), 400, "Segoe UI"),
+            light: font(px(11.0), 400, "Segoe UI"),
+            label: font(px(10.0), 400, "Segoe UI"),
+            icon: font(px(13.0), 400, "Segoe MDL2 Assets"),
+            icon_big: font(px(15.0), 400, "Segoe MDL2 Assets"),
+        }
     }
 }
 
@@ -1829,7 +1879,7 @@ fn main() {
             eng: engine::start(hwnd as isize, panel::card_pref("ytm_inicio")),
             ytm_start: panel::card_pref("ytm_inicio"),
             scale,
-            f: make_fonts(scale),
+            f: make_fonts(scale, th().style),
             canvas: None,
             dirty: false,
             title: String::new(),
@@ -1971,6 +2021,14 @@ mod canvas_tests {
         a.finish(6.0);
         b.finish_rect(6.0, 0, 0, 24, 24);
         assert_eq!(a.pixels().to_vec(), b.pixels().to_vec());
+    }
+
+    #[test]
+    fn segoe_exists_and_bogus_does_not() {
+        unsafe {
+            assert!(font_exists("Segoe UI"));
+            assert!(!font_exists("Fuente Que No Existe 123"));
+        }
     }
 
     #[test]
