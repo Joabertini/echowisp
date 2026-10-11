@@ -73,6 +73,20 @@ It runs with the user's Brave closed. Priorities: minimal resource use and respo
 - Volume through `movie_player.setVolume/mute` (synchronizes with YTM UI), not `video.volume`.
 - Width 240 = five controls + margin. Collapsed (double-click, `WM_NCLBUTTONDBLCLK`) measures the text;
   when width changes it retains the center and `pos.txt` saves the expanded card position.
+- **Instrument / Minimal style** (`theme.json` → `estilo`, default `instrumento`; Settings → Colors). Instrument
+  looks like audio gear: Bahnschrift (falls back to Segoe UI), keys with relief, segmented bars, LEDs, recessed
+  wells, and the accent as a light source (glow). Minimal is the previous card, unchanged. Same positions and
+  hit zones in both; `skin.rs` paints each component in either style. Every color still derives from background
+  + accent (`Theme::derive`: `well`, `led_off`, `top`, glow strength 0.70 on dark / 0.35 on light backgrounds).
+- Glow = a rounded-rect mask blurred once (`glow.rs`) and cached by size; the color is applied when blitting, so
+  changing the accent doesn't rebuild it. Coverage uses a signed distance (a radius-0 rect fills fully).
+- Animation only while something changes (`anim.rs`): hover 120 ms, click flash 150 ms, title cross-fade 220 ms,
+  volume cascade, power-on 300 ms. `T_ANIM` exists only during a burst and repaints the whole card (~1-2 ms per
+  frame). The status LED breathes on `T_BREATH` (66 ms) repainting and presenting only its rectangle
+  (`finish_rect` + `UpdateLayeredWindowIndirect` with `prcDirty`). Nothing animates in Minimal, collapsed,
+  hidden, or with Windows animations off (`SPI_GETCLIENTAREAANIMATION`).
+- Optional VU meter (`theme.json` → `audio_reactivo`, off by default): peak of the Brave tree's audio sessions
+  (`IAudioMeterInformation`, `meter.rs`, `windows` 0.54 like the bridge), 6 segments in the LED's place, 50 ms.
 
 ## Measurements
 - Discord bridge (`bridge/`), without VB-Cable: WASAPI process loopback by PID/tree, f32 stereo
