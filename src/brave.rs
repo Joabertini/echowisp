@@ -257,9 +257,27 @@ pub fn launch_headless(exe: &Path) -> io::Result<(Proc, u16)> {
     std::fs::create_dir_all(&prof)?;
     let port_file = prof.join("DevToolsActivePort");
     let _ = std::fs::remove_file(&port_file);
-    let args: Vec<String> = [
+    let p = spawn(exe, &headless_args(&prof))?;
+    let _ = std::fs::write(data_dir().join("brave.pid"), p.pid.to_string());
+    for _ in 0..400 { // 40 s: el primer arranque tras actualizarse el navegador tarda mas de 15
+        sleep(Duration::from_millis(100));
+        if let Some(port) = std::fs::read_to_string(&port_file).ok().and_then(|s| s.lines().next()?.parse().ok()) {
+            return Ok((p, port));
+        }
+        if p.wait(0) {
+            return Err(io::Error::other("Brave se cerró al arrancar"));
+        }
+    }
+    Err(io::Error::other("Brave no respondió"))
+}
+
+fn headless_args(prof: &Path) -> Vec<String> {
+    [
         "--headless=new",
         &format!("--user-data-dir={}", prof.display()),
+        // Sin esto navigator.webdriver es true y YouTube Music deja de mandar audio a los 50 s
+        // de cada canción (medido 12-10: con el flag sigue cargando de a 30 s).
+        "--disable-blink-features=AutomationControlled",
         "--remote-debugging-port=0",
         "--no-first-run",
         "--no-default-browser-check",
@@ -280,19 +298,7 @@ SpareRendererForSitePerProcess,PaintHolding",
     ]
     .iter()
     .map(|s| s.to_string())
-    .collect();
-    let p = spawn(exe, &args)?;
-    let _ = std::fs::write(data_dir().join("brave.pid"), p.pid.to_string());
-    for _ in 0..400 { // 40 s: el primer arranque tras actualizarse el navegador tarda mas de 15
-        sleep(Duration::from_millis(100));
-        if let Some(port) = std::fs::read_to_string(&port_file).ok().and_then(|s| s.lines().next()?.parse().ok()) {
-            return Ok((p, port));
-        }
-        if p.wait(0) {
-            return Err(io::Error::other("Brave se cerró al arrancar"));
-        }
-    }
-    Err(io::Error::other("Brave no respondió"))
+    .collect()
 }
 
 /// Unica vez que se ve Brave: ventana normal para iniciar sesion (Google o Discord).
@@ -367,4 +373,17 @@ pub fn http_get(port: u16, path: &str) -> io::Result<String> {
     let mut body = vec![0u8; len];
     r.read_exact(&mut body)?;
     String::from_utf8(body).map_err(io::Error::other)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn headless_no_se_anuncia_automatizado() {
+        // Con navigator.webdriver = true YouTube Music corta el audio a los 50 s (medido 12-10).
+        let args = headless_args(Path::new("C:\\perfil"));
+        assert!(args.iter().any(|a| a == "--disable-blink-features=AutomationControlled"));
+        assert!(args.iter().any(|a| a == "--user-data-dir=C:\\perfil"));
+    }
 }
